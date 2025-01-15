@@ -25,6 +25,10 @@ declare module 'smpp' {
     debugListener: debugListener;
   }
 
+  type SessionPduEvent = keyof defs.Commands;
+  type SessionPduParams<E extends SessionPduEvent> = PDU &
+    defs.Commands[E]['params'];
+
   type PDUMethods = {
     [C in keyof defs.Commands]: (
       params: Partial<{ [P in keyof defs.Commands[C]['params']]: any }>,
@@ -41,6 +45,18 @@ declare module 'smpp' {
     remoteAddress: string | null;
     remotePort: string | null;
     proxyProtocolProxy: string | null;
+
+    on<E extends SessionPduEvent>(
+      event: E,
+      pdu: (pdu?: SessionPduParams<E> | null) => void,
+    );
+    on(event: 'close', pdu: () => void);
+    on(event: 'error', pdu: (pdu?: unknown) => void);
+    on(event: 'unknown', pdu: (pdu?: unknown) => void);
+    on(
+      event: 'debug',
+      pdu: (type: string, message: string, payload: string) => void,
+    );
 
     connect(): void;
     pause(): void;
