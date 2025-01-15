@@ -3,13 +3,7 @@ import { defs } from 'smpp';
 
 declare module 'smpp' {
   namespace PDU {
-    type pduHeadParams =
-      | 'command_length'
-      | 'command_id'
-      | 'command_status'
-      | 'sequence_number';
-
-    type Options = {
+    type PduBaseParams = {
       command_length: number;
       command_id: number;
       command_status: number;
