@@ -2,6 +2,7 @@ import { EventEmitter } from 'events';
 import { Socket } from 'net';
 import { TLSSocket } from 'tls';
 import { defs, PDU } from 'smpp';
+import * as net from 'net';
 
 declare module 'smpp' {
   type debugListener = (type: string, msg: string, payload: any) => void;
@@ -71,7 +72,7 @@ declare module 'smpp' {
     ): boolean;
   }
 
-  export declare class Server extends EventEmitter {
+  export declare class Server extends net.Server {
     constructor(options: serverOptions, listener: (session: Session) => void);
 
     options: Partial<serverOptions>;
@@ -98,7 +99,7 @@ declare module 'smpp' {
   export declare function createServer(
     options: Partial<serverOptions>,
     listener?: (session: Session) => void,
-  ): void;
+  ): net.Server;
 
   export declare function connect(
     options: Partial<sessionOptions>,
