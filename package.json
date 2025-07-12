@@ -6,6 +6,7 @@
   "bugs": "https://github.com/farhadi/node-smpp/issues",
   "author": "Ali Farhadi <a.farhadi@gmail.com>",
   "contributors": [
+    "Semyón Fomín <techno-backlog.0q@icloud.com>",
     "Julián Gutiérrez <juliangut@gmail.com>"
   ],
   "engines": {

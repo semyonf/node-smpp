@@ -405,6 +405,7 @@ describe('Client/Server simulations', function() {
 		});
 
 		it('should fail to connect with an invalid host and trigger a EAI_AGAIN, ENOTFOUND or ESRCH error', function (done) {
+			this.timeout(5000); // on Windows timeout is greater than 2000ms
 			var session = smpp.connect({url: 'smpp://unknownhost:2775'});
 			session.on('error', function (e) {
 				// empty callback to catch emitted errors to prevent exit due unhandled errors
