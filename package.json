@@ -24,7 +24,7 @@
   "scripts": {
     "build": "rimraf dist && tsc",
     "pretest": "npm run build",
-    "test": "mocha",
+    "test": "mocha --exit",
     "test:mutation": "stryker run"
   },
   "devDependencies": {
