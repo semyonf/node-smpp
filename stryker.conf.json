@@ -1,6 +1,7 @@
 {
   "$schema": "./node_modules/@stryker-mutator/core/schema/stryker-schema.json",
   "packageManager": "npm",
+  "buildCommand": "tsc",
   "reporters": [
     "html",
     "clear-text",
@@ -12,18 +13,10 @@
   "mochaOptions": {
     "spec": ["test/**/*.js"]
   },
-  "tsconfigFile": "tsconfig.json",
   "mutate": [
     "lib/**/*.ts"
   ],
-  "checkers": ["typescript"],
-  "typescript": {
-    "config": {
-      "skipLibCheck": true
-    }
-  },
-  "timeoutMS": 30000,
   "dashboard": {
     "project": "github.com/semyonf/node-smpp"
   }
-} 
+}
