@@ -12,25 +12,24 @@
   "engines": {
     "node": ">=16"
   },
-  "main": "./lib/smpp",
+  "main": "./dist/index.js",
   "repository": {
     "type": "git",
     "url": "https://github.com/semyonf/node-smpp.git"
   },
   "license": "MIT",
   "files": [
-    "lib/",
-    "index.js"
+    "dist/"
   ],
   "scripts": {
-    "coveralls": "nyc report --reporter=text-lcov | coveralls",
-    "test_coverage": "nyc --reporter=text mocha",
+    "build": "tsc || exit 0",
+    "pretest": "npm run build",
     "test": "mocha"
   },
   "devDependencies": {
-    "coveralls": "^2.11.9",
+    "@types/node": "16.18.12",
     "mocha": "^5.2.0",
-    "nyc": "^12.0.2"
+    "typescript": "5.8.3"
   },
   "dependencies": {
     "findhit-proxywrap": "^0.3.12",

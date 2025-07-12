@@ -3,7 +3,7 @@ var assert = require('assert'),
 	tls = require('tls'),
 	fs = require('fs'),
     smpp = require('..'),
-	PDU = require('../lib/pdu').PDU,
+	PDU = require('..').PDU,
 	Buffer = require("safer-buffer").Buffer;
 
 describe('ProxyProtocol', function() {

@@ -1,7 +1,7 @@
 var assert = require('assert'),
 	Buffer = require('safer-buffer').Buffer;
-  encodings = require('../lib/defs').encodings;
-	gsmCoder = require('../lib/defs').gsmCoder;
+  encodings = require('..').encodings;
+	gsmCoder = require('..').gsmCoder;
 
 describe('encodings', function() {
 	describe('ASCII', function() {

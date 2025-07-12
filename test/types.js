@@ -1,5 +1,5 @@
 var assert = require('assert'),
-	types = require('../lib/defs').types,
+	types = require('..').types,
 	Buffer = require('safer-buffer').Buffer;
 
 describe('int8', function() {

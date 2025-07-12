@@ -1,5 +1,5 @@
 var assert = require('assert'),
-	filters = require('../lib/defs').filters,
+	filters = require('..').filters,
 	Buffer = require('safer-buffer').Buffer;
 
 describe('time', function() {
