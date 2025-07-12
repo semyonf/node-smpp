@@ -21,7 +21,6 @@ function Session(options) {
 	EventEmitter.call(this);
 	this.options = options || {};
 	var self = this;
-	var clientTransport = net;
 	var connectTimeout;
 	this._extractPDUs = this._extractPDUs.bind(self);
 	this.sequence = 0;
@@ -51,9 +50,6 @@ function Session(options) {
 	} else {
 		// client mode
 		this._mode = "client";
-		if (options.tls) {
-			clientTransport = tls;
-		}
 		if (options.hasOwnProperty("connectTimeout") && options.connectTimeout>0) {
 			connectTimeout = setTimeout(function () {
 				if (self.socket) {
@@ -65,7 +61,13 @@ function Session(options) {
 				}
 			}, options.connectTimeout);
 		}
-		this.socket = clientTransport.connect(this.options);
+
+		if (options.tls) {
+			this.socket = tls.connect(this.options);
+		} else {
+			this.socket = net.connect(this.options);
+		}
+
 		this.socket.on('connect', (function() {
 			clearTimeout(connectTimeout);
 			self.remoteAddress = self.rootSocket().remoteAddress || self.remoteAddress;
