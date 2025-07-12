@@ -1,8 +1,7 @@
 import { EventEmitter } from 'events';
 import { Socket } from 'net';
 import { TLSSocket } from 'tls';
-import { defs } from './defs';
-import { PDU } from './pdu';
+import { defs, PDU } from 'smpp';
 import * as net from 'net';
 
 declare module 'smpp' {
@@ -16,8 +15,6 @@ declare module 'smpp' {
     auto_enquire_link_period: number;
     debug: boolean;
     debugListener: debugListener;
-		host: string;
-    port: number;
   }
 
   interface serverOptions {
@@ -42,8 +39,6 @@ declare module 'smpp' {
 
   interface Session extends PDUMethods {}
   export declare class Session extends EventEmitter {
-		constructor(options: Partial<sessionOptions>);
-		
     options: Partial<sessionOptions>;
     sequence: number;
     paused: boolean;
