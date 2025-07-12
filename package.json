@@ -24,9 +24,13 @@
   "scripts": {
     "build": "rimraf dist && tsc",
     "pretest": "npm run build",
-    "test": "mocha"
+    "test": "mocha",
+    "test:mutation": "stryker run"
   },
   "devDependencies": {
+    "@stryker-mutator/core": "4.6.0",
+    "@stryker-mutator/mocha-runner": "4.6.0",
+    "@stryker-mutator/typescript-checker": "4.6.0",
     "@types/iconv-lite": "0.0.1",
     "@types/node": "16.18.12",
     "@types/safer-buffer": "2.1.3",
