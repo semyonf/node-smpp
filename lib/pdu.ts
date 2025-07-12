@@ -13,7 +13,7 @@ var pduHeadParams = [
 	'sequence_number'
 ];
 
-function PDU(command, options) {
+function PDU(command, options?): void {
 	if (Buffer.isBuffer(command)) {
 		return this.fromBuffer(command);
 	}
