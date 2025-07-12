@@ -2,10 +2,7 @@
 
 SMPP client and server implementation in node.js.
 
-[![Build Status](https://api.travis-ci.com/farhadi/node-smpp.svg?branch=master)](https://app.travis-ci.com/github/farhadi/node-smpp)
-[![Dependency Status](https://david-dm.org/farhadi/node-smpp.svg)](https://david-dm.org/farhadi/node-smpp)
-[![devDependency Status](https://david-dm.org/farhadi/node-smpp/dev-status.svg)](https://david-dm.org/farhadi/node-smpp#info=devDependencies)
-[![Coverage Status](https://coveralls.io/repos/github/farhadi/node-smpp/badge.svg?branch=master)](https://coveralls.io/github/farhadi/node-smpp?branch=master)
+![master](https://github.com/semyonf/node-smpp/actions/workflows/ci.yml/badge.svg?branch=master)
 
 ## Introduction
 
