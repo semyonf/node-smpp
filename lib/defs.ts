@@ -1,5 +1,5 @@
-var iconv = require('iconv-lite'),
-	Buffer = require('safer-buffer').Buffer;
+import { Buffer } from 'safer-buffer';
+import iconv from 'iconv-lite';
 
 var types = {
 	int8: {
@@ -1429,7 +1429,7 @@ var consts = {
 	}
 };
 
-exports.errors = {
+export const errors = {
 	ESME_ROK:                 0x0000,
 	ESME_RINVMSGLEN:          0x0001,
 	ESME_RINVCMDLEN:          0x0002,
@@ -1499,12 +1499,12 @@ exports.errors = {
 	ESME_RINVBCASTCHANIND:    0x0112
 };
 
-exports.encodings = encodings;
-exports.filters = filters;
-exports.gsmCoder = gsmCoder;
-exports.consts = consts;
-exports.commands = commands;
-exports.commandsById = commandsById;
-exports.types = types;
-exports.tlvs = tlvs;
-exports.tlvsById = tlvsById;
+export { encodings };
+export { filters };
+export { gsmCoder };
+export { consts };
+export { commands };
+export { commandsById };
+export { types };
+export { tlvs };
+export { tlvsById };

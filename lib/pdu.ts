@@ -1,9 +1,10 @@
-var defs = require('./defs'),
-	commands = defs.commands,
+import { Buffer } from 'safer-buffer';
+import * as defs from './defs';
+
+var commands = defs.commands,
 	commandsById = defs.commandsById,
 	tlvs = defs.tlvs,
-	tlvsById = defs.tlvsById,
-	Buffer = require('safer-buffer').Buffer;
+	tlvsById = defs.tlvsById
 
 var pduHeadParams = [
 	'command_length',
@@ -210,4 +211,4 @@ PDU.prototype.toBuffer = function() {
 
 PDU.maxLength = 16384;
 
-exports.PDU = PDU;
+export {PDU}

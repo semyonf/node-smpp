@@ -1,11 +1,12 @@
-var net = require('net'),
-	tls = require('tls'),
-	util = require('util'),
-	parse = require('url').parse,
-	defs = require('./defs'),
-	PDU = require('./pdu').PDU,
-	EventEmitter = require('events').EventEmitter,
-	proxy = require("findhit-proxywrap").proxy;
+import net from 'net';
+import tls from 'tls';
+import util from 'util';
+import {parse} from 'url';
+import * as defs from './defs';
+import {PDU} from './pdu';
+import {EventEmitter} from 'events';
+
+var proxy = require("findhit-proxywrap").proxy
 
 var proxyTransport = proxy(net, {
 	strict: false,
