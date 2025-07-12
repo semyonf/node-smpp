@@ -17,297 +17,315 @@ var proxyTlsTransport = proxy(tls, {
 	ignoreStrictExceptions: true
 });
 
-function Session(options) {
-	EventEmitter.call(this);
-	this.options = options || {};
-	var self = this;
-	var connectTimeout;
-	this._extractPDUs = this._extractPDUs.bind(self);
-	this.sequence = 0;
-	this.paused = false;
-	this.closed = false;
-	this.remoteAddress = null;
-	this.remotePort = null;
-	this.proxyProtocolProxy = null;
-	this._busy = false;
-	this._callbacks = {};
-	this._interval = 0;
-	this._command_length = null;
-	this._mode = null;
-	this._id = Math.floor(Math.random() * (999999 - 100000)) + 100000; // random session id
-	this._prevBytesRead = 0;
-	this.rootSocket = (function() {
-		if (self.socket._parent) return self.socket._parent;
-		return self.socket;
-	});
-	if (options.socket) {
-		// server mode / socket is already connected.
-		this._mode = "server";
-		this.socket = options.socket;
-		this.remoteAddress = self.rootSocket().remoteAddress || self.remoteAddress;
-		this.remotePort = this.rootSocket().remotePort;
-		this.proxyProtocolProxy = this.rootSocket().proxyAddress ? { address: this.rootSocket().proxyAddress, port: this.rootSocket().proxyPort } : false;
-	} else {
-		// client mode
-		this._mode = "client";
-		if (options.hasOwnProperty("connectTimeout") && options.connectTimeout>0) {
-			connectTimeout = setTimeout(function () {
-				if (self.socket) {
-					var e = new Error("Timeout of " + options.connectTimeout + "ms while connecting to " +
-						self.options.host + ":" + self.options.port);
-					e['code'] = "ETIMEOUT";
-					e['timeout'] = options.connectTimeout;
-					self.socket.destroy(e);
-				}
-			}, options.connectTimeout);
-		}
+type PDUMethods = {
+    [CommandName in keyof typeof defs.commands]: (
+	  // todo add proper types
+      params?: unknown,
+      callback?: (pdu: unknown) => void,
+    ) => void;
+  };
 
-		if (options.tls) {
-			this.socket = tls.connect(this.options);
+
+interface Session extends PDUMethods {}
+
+class Session extends EventEmitter {
+	private sequence: number = 0;
+	private paused: boolean = false;
+	private closed: boolean = false;
+	public remoteAddress: string | null = null;
+	public remotePort: number | null = null;
+	public proxyProtocolProxy: any = null;
+	private _busy: boolean = false;
+	private _callbacks = {};
+	private _interval: NodeJS.Timeout | 0 = 0;
+	private _command_length: number | null = null;
+	private _mode: string | null = null;
+	private _id: number = Math.floor(Math.random() * (999999 - 100000)) + 100000; // random session id
+	private _prevBytesRead: number = 0;
+
+	private socket: any;
+	public server: any;
+
+	rootSocket() {
+		if (this.socket._parent) return this.socket._parent;
+		return this.socket;
+	}
+
+	constructor(private options: any = {}) {
+		super();
+		
+		var self = this;
+		let connectTimeout;
+		this._extractPDUs = this._extractPDUs.bind(self);
+
+		if (options.socket) {
+			// server mode / socket is already connected.
+			this._mode = "server";
+			this.socket = options.socket;
+			this.remoteAddress = self.rootSocket().remoteAddress || self.remoteAddress;
+			this.remotePort = this.rootSocket().remotePort;
+			this.proxyProtocolProxy = this.rootSocket().proxyAddress ? { address: this.rootSocket().proxyAddress, port: this.rootSocket().proxyPort } : false;
 		} else {
-			this.socket = net.connect(this.options);
+			// client mode
+			this._mode = "client";
+			if (options.hasOwnProperty("connectTimeout") && options.connectTimeout>0) {
+				connectTimeout = setTimeout(function () {
+					if (self.socket) {
+						var e = new Error("Timeout of " + options.connectTimeout + "ms while connecting to " +
+							self.options.host + ":" + self.options.port);
+						e['code'] = "ETIMEOUT";
+						e['timeout'] = options.connectTimeout;
+						self.socket.destroy(e);
+					}
+				}, options.connectTimeout);
+			}
+	
+			if (options.tls) {
+				this.socket = tls.connect(this.options);
+			} else {
+				this.socket = net.connect(this.options);
+			}
+	
+			this.socket.on('connect', (function() {
+				clearTimeout(connectTimeout);
+				self.remoteAddress = self.rootSocket().remoteAddress || self.remoteAddress;
+				self.remotePort = self.rootSocket().remotePort || self.remoteAddress;
+				self.debug("server.connected", "connected to server", {secure: options.tls});
+				self.emitMetric("server.connected", 1);
+				self.emit('connect'); // @todo should emit the session, but it would break BC
+				if(self.options.auto_enquire_link_period) {
+					self._interval = setInterval(function() {
+						self.enquire_link();
+					}, self.options.auto_enquire_link_period);
+				}
+			}).bind(this));
+			this.socket.on('secureConnect', (function() {
+				self.emit('secureConnect'); // @todo should emit the session, but it would break BC
+			}).bind(this));
 		}
-
-		this.socket.on('connect', (function() {
+		this.socket.on('readable', function() {
+			var bytesRead = self.socket.bytesRead - self._prevBytesRead;
+			if ( bytesRead > 0 ) {
+				// on disconnections the readable event receives 0 bytes, we do not want to debug that
+				self.debug("socket.data.in", null, {bytes: bytesRead});
+				self.emitMetric("socket.data.in", bytesRead, {bytes: bytesRead});
+				self._prevBytesRead = self.socket.bytesRead;
+			}
+			self._extractPDUs();
+		});
+		this.socket.on('close', function() {
+			self.closed = true;
 			clearTimeout(connectTimeout);
-			self.remoteAddress = self.rootSocket().remoteAddress || self.remoteAddress;
-			self.remotePort = self.rootSocket().remotePort || self.remoteAddress;
-			self.debug("server.connected", "connected to server", {secure: options.tls});
-			self.emitMetric("server.connected", 1);
-			self.emit('connect'); // @todo should emit the session, but it would break BC
-			if(self.options.auto_enquire_link_period) {
-				self._interval = setInterval(function() {
-					self.enquire_link();
-				}, self.options.auto_enquire_link_period);
+			if (self._mode === "server") {
+				self.debug("client.disconnected", "client has disconnected");
+				self.emitMetric("client.disconnected", 1);
+			} else {
+				self.debug("server.disconnected", "disconnected from server");
+				self.emitMetric("server.disconnected", 1);
 			}
-		}).bind(this));
-		this.socket.on('secureConnect', (function() {
-			self.emit('secureConnect'); // @todo should emit the session, but it would break BC
-		}).bind(this));
-	}
-	this.socket.on('readable', function() {
-		var bytesRead = self.socket.bytesRead - self._prevBytesRead;
-		if ( bytesRead > 0 ) {
-			// on disconnections the readable event receives 0 bytes, we do not want to debug that
-			self.debug("socket.data.in", null, {bytes: bytesRead});
-			self.emitMetric("socket.data.in", bytesRead, {bytes: bytesRead});
-			self._prevBytesRead = self.socket.bytesRead;
-		}
-		self._extractPDUs();
-	});
-	this.socket.on('close', function() {
-		self.closed = true;
-		clearTimeout(connectTimeout);
-		if (self._mode === "server") {
-			self.debug("client.disconnected", "client has disconnected");
-			self.emitMetric("client.disconnected", 1);
-		} else {
-			self.debug("server.disconnected", "disconnected from server");
-			self.emitMetric("server.disconnected", 1);
-		}
-		self.emit('close');
-		if(self._interval) {
-			clearInterval(self._interval);
-			self._interval = 0;
-		}
-	});
-	this.socket.on('error', function(e) {
-		clearTimeout(connectTimeout);
-		if (self._interval) {
-			clearInterval(self._interval);
-			self._interval = 0;
-		}
-		self.debug("socket.error", e.message, e);
-		self.emitMetric("socket.error", 1, {error: e});
-		self.emit('error', e); // Emitted errors will kill the program if they're not captured.
-	});
-}
-
-util.inherits(Session, EventEmitter);
-
-Session.prototype.emitMetric = function(event, value, payload) {
-	this.emit('metrics', event || null, value || null, payload || {}, {
-		mode: this._mode || null,
-		remoteAddress: this.remoteAddress || null,
-		remotePort: this.remotePort || null,
-		remoteTls: this.options.tls || false,
-		sessionId: this._id || null,
-		session: this
-	});
-}
-
-Session.prototype.debug = function(type, msg, payload) {
-	if (type === undefined) type = null;
-	if (msg === undefined) msg = null;
-	if (this.options.debug) {
-		var coloredTypes = {
-			"reset": "\x1b[0m",
-			"dim": "\x1b[2m",
-			"client.connected": "\x1b[1m\x1b[34m",
-			"client.disconnected": "\x1b[1m\x1b[31m",
-			"server.connected": "\x1b[1m\x1b[34m",
-			"server.disconnected": "\x1b[1m\x1b[31m",
-			"pdu.command.in": "\x1b[36m",
-			"pdu.command.out": "\x1b[32m",
-			"pdu.command.error": "\x1b[41m\x1b[30m",
-			"socket.error": "\x1b[41m\x1b[30m",
-			"socket.data.in": "\x1b[2m",
-			"socket.data.out": "\x1b[2m",
-			"metrics": "\x1b[2m",
-		}
-		var now = new Date();
-		var logBuffer = now.toISOString() +
-			" - " + (this._mode === "server" ? "srv" : "cli") +
-			" - " + this._id +
-			" - " + (coloredTypes.hasOwnProperty(type) ? coloredTypes[type] + type + coloredTypes.reset : type) +
-			" - " + (msg !== null ? msg : "" ) +
-			" - " + coloredTypes.dim + (payload !== undefined ? JSON.stringify(payload) : "") + coloredTypes.reset;
-		if (this.remoteAddress) logBuffer += " - [" + this.remoteAddress + "]"
-		console.log( logBuffer );
-	}
-	if (this.options.debugListener instanceof Function) {
-		this.options.debugListener(type, msg, payload);
-	}
-	this.emit('debug', type, msg, payload);
-}
-
-Session.prototype.connect = function() {
-	this.sequence = 0;
-	this.paused = false;
-	this._busy = false;
-	this._callbacks = {};
-	this.socket.connect(this.options);
-};
-
-Session.prototype._extractPDUs = function() {
-	if (this._busy) {
-		return;
-	}
-	this._busy = true;
-	var pdu;
-	while (!this.paused) {
-		try {
-			if(!this._command_length) {
-				this._command_length = PDU.commandLength(this.socket);
-				if(!this._command_length) {
-					break;
-				}
+			self.emit('close');
+			if(self._interval) {
+				clearInterval(self._interval);
+				self._interval = 0;
 			}
-			if (!(pdu = PDU.fromStream(this.socket, this._command_length))) {
-				break;
+		});
+		this.socket.on('error', function(e) {
+			clearTimeout(connectTimeout);
+			if (self._interval) {
+				clearInterval(self._interval);
+				self._interval = 0;
 			}
-			this.debug("pdu.command.in", pdu.command, pdu);
-			this.emitMetric("pdu.command.in", 1, pdu);
-		} catch (e) {
-			this.debug("pdu.command.error", e.message, e);
-			this.emitMetric("pdu.command.error", 1, {error: e});
-			this.emit('error', e);
+			self.debug("socket.error", e.message, e);
+			self.emitMetric("socket.error", 1, {error: e});
+			self.emit('error', e); // Emitted errors will kill the program if they're not captured.
+		});
+	
+	}
+
+	emitMetric(event, value, payload?) {
+		this.emit('metrics', event || null, value || null, payload || {}, {
+			mode: this._mode || null,
+			remoteAddress: this.remoteAddress || null,
+			remotePort: this.remotePort || null,
+			remoteTls: this.options.tls || false,
+			sessionId: this._id || null,
+			session: this
+		});
+	}
+
+	debug(type, msg, payload?) {
+		if (type === undefined) type = null;
+		if (msg === undefined) msg = null;
+		if (this.options.debug) {
+			var coloredTypes = {
+				"reset": "\x1b[0m",
+				"dim": "\x1b[2m",
+				"client.connected": "\x1b[1m\x1b[34m",
+				"client.disconnected": "\x1b[1m\x1b[31m",
+				"server.connected": "\x1b[1m\x1b[34m",
+				"server.disconnected": "\x1b[1m\x1b[31m",
+				"pdu.command.in": "\x1b[36m",
+				"pdu.command.out": "\x1b[32m",
+				"pdu.command.error": "\x1b[41m\x1b[30m",
+				"socket.error": "\x1b[41m\x1b[30m",
+				"socket.data.in": "\x1b[2m",
+				"socket.data.out": "\x1b[2m",
+				"metrics": "\x1b[2m",
+			}
+			var now = new Date();
+			var logBuffer = now.toISOString() +
+				" - " + (this._mode === "server" ? "srv" : "cli") +
+				" - " + this._id +
+				" - " + (coloredTypes.hasOwnProperty(type) ? coloredTypes[type] + type + coloredTypes.reset : type) +
+				" - " + (msg !== null ? msg : "" ) +
+				" - " + coloredTypes.dim + (payload !== undefined ? JSON.stringify(payload) : "") + coloredTypes.reset;
+			if (this.remoteAddress) logBuffer += " - [" + this.remoteAddress + "]"
+			console.log( logBuffer );
+		}
+		if (this.options.debugListener instanceof Function) {
+			this.options.debugListener(type, msg, payload);
+		}
+		this.emit('debug', type, msg, payload);
+	}
+
+	connect() {
+		this.sequence = 0;
+		this.paused = false;
+		this._busy = false;
+		this._callbacks = {};
+		this.socket.connect(this.options);
+	}
+
+	private _extractPDUs() {
+		if (this._busy) {
 			return;
 		}
-		this._command_length = null;
-		this.emit('pdu', pdu);
-		this.emit(pdu.command, pdu);
-		if (pdu.isResponse() && this._callbacks[pdu.sequence_number]) {
-			this._callbacks[pdu.sequence_number](pdu);
-			delete this._callbacks[pdu.sequence_number];
-		}
-	}
-	this._busy = false;
-};
-
-Session.prototype.send = function(pdu, responseCallback, sendCallback, failureCallback) {
-	if (!this.socket.writable) {
-		var errorObject = {
-			error: 'Socket is not writable',
-			errorType: 'socket_not_writable'
-		}
-		this.debug('socket.data.error', null, errorObject);
-		this.emitMetric("socket.data.error", 1, errorObject);
-		if (failureCallback) {
-			pdu.command_status = defs.errors.ESME_RSUBMITFAIL;
-			failureCallback(pdu);
-		}
-		return false;
-	}
-	if (!pdu.isResponse()) {
-		// when server/session pair is used to proxy smpp
-		// traffic, the sequence_number will be provided by
-		// client otherwise we generate it automatically
-		if (!pdu.sequence_number) {
-			if (this.sequence == 0x7FFFFFFF) {
-				this.sequence = 0;
+		this._busy = true;
+		var pdu;
+		while (!this.paused) {
+			try {
+				if(!this._command_length) {
+					this._command_length = PDU.commandLength(this.socket);
+					if(!this._command_length) {
+						break;
+					}
+				}
+				if (!(pdu = PDU.fromStream(this.socket, this._command_length))) {
+					break;
+				}
+				this.debug("pdu.command.in", pdu.command, pdu);
+				this.emitMetric("pdu.command.in", 1, pdu);
+			} catch (e) {
+				this.debug("pdu.command.error", e.message, e);
+				this.emitMetric("pdu.command.error", 1, {error: e});
+				this.emit('error', e);
+				return;
 			}
-			pdu.sequence_number = ++this.sequence;
-		}
-		if (responseCallback) {
-			this._callbacks[pdu.sequence_number] = responseCallback;
-		}
-	} else if (responseCallback && !sendCallback) {
-		sendCallback = responseCallback;
-	}
-	this.debug('pdu.command.out', pdu.command, pdu);
-	this.emitMetric("pdu.command.out", 1, pdu);
-	var buffer = pdu.toBuffer();
-	this.socket.write(buffer, (function(err) {
-		if (err) {
-			this.debug('socket.data.error', null, {
-			    error:'Cannot write command ' + pdu.command + ' to socket',
-			    errorType: 'socket_write_error'
-			});
-			this.emitMetric("socket.data.error", 1, {
-				error: err,
-				errorType: 'socket_write_error',
-				pdu: pdu
-			});
-			if (!pdu.isResponse() && this._callbacks[pdu.sequence_number]) {
+			this._command_length = null;
+			this.emit('pdu', pdu);
+			this.emit(pdu.command, pdu);
+			if (pdu.isResponse() && this._callbacks[pdu.sequence_number]) {
+				this._callbacks[pdu.sequence_number](pdu);
 				delete this._callbacks[pdu.sequence_number];
 			}
+		}
+		this._busy = false;
+	}
+
+	send(pdu, responseCallback, sendCallback, failureCallback) {
+		if (!this.socket.writable) {
+			var errorObject = {
+				error: 'Socket is not writable',
+				errorType: 'socket_not_writable'
+			}
+			this.debug('socket.data.error', null, errorObject);
+			this.emitMetric("socket.data.error", 1, errorObject);
 			if (failureCallback) {
 				pdu.command_status = defs.errors.ESME_RSUBMITFAIL;
-				failureCallback(pdu, err);
+				failureCallback(pdu);
 			}
-		} else {
-			this.debug("socket.data.out", null, {bytes: buffer.length, error: err});
-			this.emitMetric("socket.data.out", buffer.length, {bytes: buffer.length});
-			this.emit('send', pdu);
-			if (sendCallback) {
-				sendCallback(pdu);
-        	}
+			return false;
 		}
-	}).bind(this));
-	return true;
-};
-
-Session.prototype.pause = function() {
-	this.paused = true;
-};
-
-Session.prototype.resume = function() {
-	this.paused = false;
-	this._extractPDUs();
-};
-
-Session.prototype.close = function(callback) {
-	if (callback) {
-		if (this.closed) {
-			callback();
-		} else {
-			this.socket.once('close', callback);
+		if (!pdu.isResponse()) {
+			// when server/session pair is used to proxy smpp
+			// traffic, the sequence_number will be provided by
+			// client otherwise we generate it automatically
+			if (!pdu.sequence_number) {
+				if (this.sequence == 0x7FFFFFFF) {
+					this.sequence = 0;
+				}
+				pdu.sequence_number = ++this.sequence;
+			}
+			if (responseCallback) {
+				this._callbacks[pdu.sequence_number] = responseCallback;
+			}
+		} else if (responseCallback && !sendCallback) {
+			sendCallback = responseCallback;
 		}
+		this.debug('pdu.command.out', pdu.command, pdu);
+		this.emitMetric("pdu.command.out", 1, pdu);
+		var buffer = pdu.toBuffer();
+		this.socket.write(buffer, (function(err) {
+			if (err) {
+				this.debug('socket.data.error', null, {
+					error:'Cannot write command ' + pdu.command + ' to socket',
+					errorType: 'socket_write_error'
+				});
+				this.emitMetric("socket.data.error", 1, {
+					error: err,
+					errorType: 'socket_write_error',
+					pdu: pdu
+				});
+				if (!pdu.isResponse() && this._callbacks[pdu.sequence_number]) {
+					delete this._callbacks[pdu.sequence_number];
+				}
+				if (failureCallback) {
+					pdu.command_status = defs.errors.ESME_RSUBMITFAIL;
+					failureCallback(pdu, err);
+				}
+			} else {
+				this.debug("socket.data.out", null, {bytes: buffer.length, error: err});
+				this.emitMetric("socket.data.out", buffer.length, {bytes: buffer.length});
+				this.emit('send', pdu);
+				if (sendCallback) {
+					sendCallback(pdu);
+				}
+			}
+		}).bind(this));
+		return true;
 	}
-	this.socket.end();
-};
 
-Session.prototype.destroy = function(callback) {
-	if (callback) {
-		if (this.closed) {
-			callback();
-		} else {
-			this.socket.once('close', callback);
-		}
+	pause() {
+		this.paused = true;
 	}
-	this.socket.destroy();
-};
+
+	resume() {
+		this.paused = false;
+		this._extractPDUs();
+	}
+
+	close(callback) {
+		if (callback) {
+			if (this.closed) {
+				callback();
+			} else {
+				this.socket.once('close', callback);
+			}
+		}
+		this.socket.end();
+	}
+
+	destroy(callback) {
+		if (callback) {
+			if (this.closed) {
+				callback();
+			} else {
+				this.socket.once('close', callback);
+			}
+		}
+		this.socket.destroy();
+	}
+}
 
 var createShortcut = function(command) {
 	return function(options, responseCallback, sendCallback, failureCallback) {

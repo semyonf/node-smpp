@@ -4,6 +4,7 @@
     "esModuleInterop": true,
     "forceConsistentCasingInFileNames": true,
     "isolatedModules": true,
+    "declaration": true,
     "lib": [
       "ES2021"
     ],
@@ -16,7 +17,7 @@
     "target": "ES2021"
   },
   "include": [
-    "**/*.ts"
+    "lib/**/*.ts"
   ],
   "exclude": [
     "node_modules"

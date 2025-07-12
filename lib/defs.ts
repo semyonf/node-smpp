@@ -1,229 +1,244 @@
 import { Buffer } from 'safer-buffer';
 import iconv from 'iconv-lite';
 
-var types = {
-	int8: {
-		read: function(buffer, offset) {
-			return buffer.readUInt8(offset);
-		},
-		write: function(value, buffer, offset) {
-			value = value || 0;
-			buffer.writeUInt8(value, offset);
-		},
-		size: function() {
-			return 1;
-		},
-		default: 0
+const int8 = {
+	read: function(buffer, offset) {
+		return buffer.readUInt8(offset);
 	},
-	int16: {
-		read: function(buffer, offset) {
-			return buffer.readUInt16BE(offset);
-		},
-		write: function(value, buffer, offset) {
-			value = value || 0;
-			buffer.writeUInt16BE(value, offset);
-		},
-		size: function() {
-			return 2;
-		},
-		default: 0
+	write: function(value, buffer, offset) {
+		value = value || 0;
+		buffer.writeUInt8(value, offset);
 	},
-	int32: {
-		read: function(buffer, offset) {
-			return buffer.readUInt32BE(offset);
-		},
-		write: function(value, buffer, offset) {
-			value = value || 0;
-			buffer.writeUInt32BE(value, offset);
-		},
-		size: function() {
-			return 4;
-		},
-		default: 0
+	size: function() {
+		return 1;
 	},
-	string: {
-		read: function(buffer, offset) {
-			var length = buffer.readUInt8(offset++);
-			return buffer.toString('ascii', offset, offset + length);
-		},
-		write: function(value, buffer, offset) {
-			if (!Buffer.isBuffer(value)) {
-				value = Buffer.from(String(value), 'ascii');
-			}
-			buffer.writeUInt8(value.length, offset++);
-			value.copy(buffer, offset);
-		},
-		size: function(value) {
-			return (value.length || String(value).length) + 1;
-		},
-		default: ''
+	default: 0
+} as const
+
+const int16 = {
+	read: function(buffer, offset) {
+		return buffer.readUInt16BE(offset);
 	},
-	cstring: {
-		read: function(buffer, offset) {
-			var length = 0;
-			while (buffer[offset + length]) {
-				length++;
-			}
-			return buffer.toString('ascii', offset, offset + length);
-		},
-		write: function(value, buffer, offset) {
-			if (!Buffer.isBuffer(value)) {
-				value = Buffer.from(String(value), 'ascii');
-			}
-			value.copy(buffer, offset);
-			buffer[offset + value.length] = 0;
-		},
-		size: function(value) {
-			return (value.length || String(value).length) + 1;
-		},
-		default: ''
+	write: function(value, buffer, offset) {
+		value = value || 0;
+		buffer.writeUInt16BE(value, offset);
 	},
-	buffer: {
-		read: function(buffer, offset) {
-			var length = buffer.readUInt8(offset++);
-			return buffer.slice(offset, offset + length);
-		},
-		write: function(value, buffer, offset) {
-			buffer.writeUInt8(value.length, offset++);
-			if (typeof value == 'string') {
-				value = Buffer.from(value, 'ascii');
-			}
-			value.copy(buffer, offset);
-		},
-		size: function(value) {
-			return value.length + 1;
-		},
-		default: Buffer.alloc(0)
+	size: function() {
+		return 2;
 	},
-	dest_address_array: {
-		read: function(buffer, offset) {
-			var dest_address, dest_flag, result = [];
-			var number_of_dests = buffer.readUInt8(offset++);
-			while (number_of_dests-- > 0) {
-				dest_flag = buffer.readUInt8(offset++);
-				if (dest_flag == 1) {
-					dest_address = {
-						dest_addr_ton: buffer.readUInt8(offset++),
-						dest_addr_npi: buffer.readUInt8(offset++),
-						destination_addr: types.cstring.read(buffer, offset)
-					};
-					offset += types.cstring.size(dest_address.destination_addr);
-				} else {
-					dest_address = {
-						dl_name: types.cstring.read(buffer, offset)
-					};
-					offset += types.cstring.size(dest_address.dl_name);
-				}
-				result.push(dest_address);
-			}
-			return result;
-		},
-		write: function(value, buffer, offset) {
-			buffer.writeUInt8(value.length, offset++);
-			value.forEach(function(dest_address) {
-				if ('dl_name' in dest_address) {
-					buffer.writeUInt8(2, offset++);
-					types.cstring.write(dest_address.dl_name, buffer, offset);
-					offset += types.cstring.size(dest_address.dl_name);
-				} else {
-					buffer.writeUInt8(1, offset++);
-					buffer.writeUInt8(dest_address.dest_addr_ton || 0, offset++);
-					buffer.writeUInt8(dest_address.dest_addr_npi || 0, offset++);
-					types.cstring.write(dest_address.destination_addr, buffer, offset);
-					offset += types.cstring.size(dest_address.destination_addr);
-				}
-			});
-		},
-		size: function(value) {
-			var size = 1;
-			value.forEach(function(dest_address) {
-				if ('dl_name' in dest_address) {
-					size += types.cstring.size(dest_address.dl_name) + 1;
-				} else {
-					size += types.cstring.size(dest_address.destination_addr) + 3;
-				}
-			});
-			return size;
-		},
-		default: []
+	default: 0
+} as const
+
+const int32 = {
+	read: function(buffer, offset) {
+		return buffer.readUInt32BE(offset);
 	},
-	unsuccess_sme_array: {
-		read: function(buffer, offset) {
-			var unsuccess_sme, result = [];
-			var no_unsuccess = buffer.readUInt8(offset++);
-			while (no_unsuccess-- > 0) {
-				unsuccess_sme = {
+	write: function(value, buffer, offset) {
+		value = value || 0;
+		buffer.writeUInt32BE(value, offset);
+	},
+	size: function() {
+		return 4;
+	},
+	default: 0
+} as const
+
+const string = {
+	read: function(buffer, offset) {
+		var length = buffer.readUInt8(offset++);
+		return buffer.toString('ascii', offset, offset + length);
+	},
+	write: function(value, buffer, offset) {
+		if (!Buffer.isBuffer(value)) {
+			value = Buffer.from(String(value), 'ascii');
+		}
+		buffer.writeUInt8(value.length, offset++);
+		value.copy(buffer, offset);
+	},
+	size: function(value) {
+		return (value.length || String(value).length) + 1;
+	},
+	default: ''
+} as const
+
+const cstring = {
+	read: function(buffer, offset) {
+		var length = 0;
+		while (buffer[offset + length]) {
+			length++;
+		}
+		return buffer.toString('ascii', offset, offset + length);
+	},
+	write: function(value, buffer, offset) {
+		if (!Buffer.isBuffer(value)) {
+			value = Buffer.from(String(value), 'ascii');
+		}
+		value.copy(buffer, offset);
+		buffer[offset + value.length] = 0;
+	},
+	size: function(value) {
+		return (value.length || String(value).length) + 1;
+	},
+	default: ''
+} as const
+
+const buffer = {
+	read: function(buffer, offset) {
+		var length = buffer.readUInt8(offset++);
+		return buffer.slice(offset, offset + length);
+	},
+	write: function(value, buffer, offset) {
+		buffer.writeUInt8(value.length, offset++);
+		if (typeof value == 'string') {
+			value = Buffer.from(value, 'ascii');
+		}
+		value.copy(buffer, offset);
+	},
+	size: function(value) {
+		return value.length + 1;
+	},
+	default: Buffer.alloc(0)
+} as const
+
+const dest_address_array = {
+	read: function(buffer, offset) {
+		var dest_address, dest_flag, result = [];
+		var number_of_dests = buffer.readUInt8(offset++);
+		while (number_of_dests-- > 0) {
+			dest_flag = buffer.readUInt8(offset++);
+			if (dest_flag == 1) {
+				dest_address = {
 					dest_addr_ton: buffer.readUInt8(offset++),
 					dest_addr_npi: buffer.readUInt8(offset++),
 					destination_addr: types.cstring.read(buffer, offset)
 				};
-				offset += types.cstring.size(unsuccess_sme.destination_addr);
-				unsuccess_sme.error_status_code = buffer.readUInt32BE(offset);
-				offset += 4;
-				result.push(unsuccess_sme);
+				offset += types.cstring.size(dest_address.destination_addr);
+			} else {
+				dest_address = {
+					dl_name: types.cstring.read(buffer, offset)
+				};
+				offset += types.cstring.size(dest_address.dl_name);
 			}
-			return result;
-		},
-		write: function(value, buffer, offset) {
-			buffer.writeUInt8(value.length, offset++);
-			value.forEach(function(unsuccess_sme) {
-				buffer.writeUInt8(unsuccess_sme.dest_addr_ton || 0, offset++);
-				buffer.writeUInt8(unsuccess_sme.dest_addr_npi || 0, offset++);
-				types.cstring.write(unsuccess_sme.destination_addr, buffer, offset);
-				offset += types.cstring.size(unsuccess_sme.destination_addr);
-				buffer.writeUInt32BE(unsuccess_sme.error_status_code, offset);
-				offset += 4;
-			});
-		},
-		size: function(value) {
-			var size = 1;
-			value.forEach(function(unsuccess_sme) {
-				size += types.cstring.size(unsuccess_sme.destination_addr) + 6;
-			});
-			return size;
-		},
-		default: []
-	}
-};
-
-types.tlv = {
-	int8: types.int8,
-	int16: types.int16,
-	int32: types.int32,
-	cstring: types.cstring,
-	string: {
-		read: function(buffer, offset, length) {
-			return buffer.toString('ascii', offset, offset + length);
-		},
-		write: function(value, buffer, offset) {
-			if (typeof value == 'string') {
-				value = Buffer.from(value, 'ascii');
-			}
-			value.copy(buffer, offset);
-		},
-		size: function(value) {
-			return value.length;
-		},
-		default: ''
+			result.push(dest_address);
+		}
+		return result;
 	},
-	buffer: {
-		read: function(buffer, offset, length) {
-			return buffer.slice(offset, offset + length);
-		},
-		write: function(value, buffer, offset) {
-			if (typeof value == 'string') {
-				value = Buffer.from(value, 'ascii');
+	write: function(value, buffer, offset) {
+		buffer.writeUInt8(value.length, offset++);
+		value.forEach(function(dest_address) {
+			if ('dl_name' in dest_address) {
+				buffer.writeUInt8(2, offset++);
+				types.cstring.write(dest_address.dl_name, buffer, offset);
+				offset += types.cstring.size(dest_address.dl_name);
+			} else {
+				buffer.writeUInt8(1, offset++);
+				buffer.writeUInt8(dest_address.dest_addr_ton || 0, offset++);
+				buffer.writeUInt8(dest_address.dest_addr_npi || 0, offset++);
+				types.cstring.write(dest_address.destination_addr, buffer, offset);
+				offset += types.cstring.size(dest_address.destination_addr);
 			}
-			value.copy(buffer, offset);
-		},
-		size: function(value) {
-			return value.length;
-		},
-		default: null
-	}
-};
+		});
+	},
+	size: function(value) {
+		var size = 1;
+		value.forEach(function(dest_address) {
+			if ('dl_name' in dest_address) {
+				size += types.cstring.size(dest_address.dl_name) + 1;
+			} else {
+				size += types.cstring.size(dest_address.destination_addr) + 3;
+			}
+		});
+		return size;
+	},
+	default: []
+} as const
 
-var gsmCoder = {
+const unsuccess_sme_array = {
+	read: function(buffer, offset) {
+		var unsuccess_sme, result = [];
+		var no_unsuccess = buffer.readUInt8(offset++);
+		while (no_unsuccess-- > 0) {
+			unsuccess_sme = {
+				dest_addr_ton: buffer.readUInt8(offset++),
+				dest_addr_npi: buffer.readUInt8(offset++),
+				destination_addr: types.cstring.read(buffer, offset)
+			};
+			offset += types.cstring.size(unsuccess_sme.destination_addr);
+			unsuccess_sme.error_status_code = buffer.readUInt32BE(offset);
+			offset += 4;
+			result.push(unsuccess_sme);
+		}
+		return result;
+	},
+	write: function(value, buffer, offset) {
+		buffer.writeUInt8(value.length, offset++);
+		value.forEach(function(unsuccess_sme) {
+			buffer.writeUInt8(unsuccess_sme.dest_addr_ton || 0, offset++);
+			buffer.writeUInt8(unsuccess_sme.dest_addr_npi || 0, offset++);
+			types.cstring.write(unsuccess_sme.destination_addr, buffer, offset);
+			offset += types.cstring.size(unsuccess_sme.destination_addr);
+			buffer.writeUInt32BE(unsuccess_sme.error_status_code, offset);
+			offset += 4;
+		});
+	},
+	size: function(value) {
+		var size = 1;
+		value.forEach(function(unsuccess_sme) {
+			size += types.cstring.size(unsuccess_sme.destination_addr) + 6;
+		});
+		return size;
+	},
+	default: []
+} as const
+
+const types = {
+	int8,
+	int16,
+	int32,
+	string,
+	cstring,
+	buffer,
+	dest_address_array,
+	unsuccess_sme_array,
+	tlv: {
+		int8,
+		int16,
+		int32,
+		cstring,
+		string: {
+			read: function(buffer, offset, length) {
+				return buffer.toString('ascii', offset, offset + length);
+			},
+			write: function(value, buffer, offset) {
+				if (typeof value == 'string') {
+					value = Buffer.from(value, 'ascii');
+				}
+				value.copy(buffer, offset);
+			},
+			size: function(value) {
+				return value.length;
+			},
+			default: ''
+		},
+		buffer: {
+			read: function(buffer, offset, length) {
+				return buffer.slice(offset, offset + length);
+			},
+			write: function(value, buffer, offset) {
+				if (typeof value == 'string') {
+					value = Buffer.from(value, 'ascii');
+				}
+				value.copy(buffer, offset);
+			},
+			size: function(value) {
+				return value.length;
+			},
+			default: null
+		}
+	}
+} as const;
+
+const gsmCoder = {
 	// GSM 03.38
 	GSM: {
 		chars: '@£$¥èéùìòÇ\nØø\rÅåΔ_ΦΓΛΩΠΨΣΘΞ\x1BÆæßÉ !"#¤%&\'()*+,-./0123456789:;<=>?¡ABCDEFGHIJKLMNOPQRSTUVWXYZÄÖÑÜ§¿abcdefghijklmnopqrstuvwxyzäöñüà',
@@ -271,469 +286,448 @@ var gsmCoder = {
 		extCharListEnc: {},
 		charListDec: {},
 		extCharListDec: {}
-	}
-};
-
-gsmCoder.getCoder = function(encoding) {
-	var coder = this.GSM;
-	switch (encoding) {
-		case 0x01:
-			coder = this.GSM_TR;
-			break;
-		case 0x02:
-			coder = this.GSM_ES;
-			break;
-		case 0x03:
-			coder = this.GSM_PT;
-			break;
-	}
-
-	if (Object.keys(coder.charListEnc).length === 0) {
-		for (var i = 0; i < coder.chars.length; i++) {
-			coder.charListEnc[coder.chars[i]] = i;
-			coder.charListDec[i] = coder.chars[i];
-		}
-
+	},
+	encode: function(string, encoding) {
+		var coder = this.getCoder(encoding);
 		var extCharsEnc = coder.extCharsEnc || coder.extChars;
-		var escCharsEnc = coder.escCharsEnc || coder.escChars;
-		for (var i = 0; i < extCharsEnc.length; i++) {
-			coder.extCharListEnc[extCharsEnc[i]] = escCharsEnc[i];
+		var extCharRegex = new RegExp('[' + extCharsEnc.replace(']', '\\]') + ']', 'g');
+	
+		string = string.replace(extCharRegex, function(match) {
+			return '\x1B' + coder.extCharListEnc[match];
+		});
+	
+		var result = [];
+	
+		for (var i = 0; i < string.length; i++) {
+			result.push(string[i] in coder.charListEnc ? coder.charListEnc[string[i]] : '\x20');
 		}
-
-		var extCharsDec = coder.extCharsDec || coder.extChars;
+	
+		return Buffer.from(result);
+	},
+	decode: function (string, encoding) {
+		var coder = this.getCoder(encoding);
 		var escCharsDec = coder.escCharsDec || coder.escChars;
-		for (var i = 0; i < escCharsDec.length; i++) {
-			coder.extCharListDec[escCharsDec[i]] = extCharsDec[i];
+		var escCharRegex = new RegExp('\x1B([' + escCharsDec + '])', 'g');
+		var result = '';
+	
+		for (var i = 0; i < string.length; i++) {
+			result += coder.charListDec[string[i]] || ' ';
 		}
-	}
-
-	return coder;
-};
-
-gsmCoder.encode = function(string, encoding) {
-	var coder = this.getCoder(encoding);
-	var extCharsEnc = coder.extCharsEnc || coder.extChars;
-	var extCharRegex = new RegExp('[' + extCharsEnc.replace(']', '\\]') + ']', 'g');
-
-	string = string.replace(extCharRegex, function(match) {
-		return '\x1B' + coder.extCharListEnc[match];
-	});
-
-	var result = [];
-
-	for (var i = 0; i < string.length; i++) {
-		result.push(string[i] in coder.charListEnc ? coder.charListEnc[string[i]] : '\x20');
-	}
-
-	return Buffer.from(result);
-};
-
-gsmCoder.decode = function (string, encoding) {
-	var coder = this.getCoder(encoding);
-	var escCharsDec = coder.escCharsDec || coder.escChars;
-	var escCharRegex = new RegExp('\x1B([' + escCharsDec + '])', 'g');
-	var result = '';
-
-	for (var i = 0; i < string.length; i++) {
-		result += coder.charListDec[string[i]] || ' ';
-	}
-
-	return result.replace(escCharRegex, function(match, p1) {
-		return coder.extCharListDec[p1];
-	});
-};
-
-gsmCoder.detect = function (string) {
-	if (gsmCoder.GSM_ES.charRegex.test(string)) {
-		return 0x02;
-	}
-
-	if (gsmCoder.GSM_PT.charRegex.test(string)) {
-		return 0x03;
-	}
-
-	if (gsmCoder.GSM_TR.charRegex.test(string)) {
-		return 0x01;
-	}
-
-	if (gsmCoder.GSM.charRegex.test(string)) {
-		return 0x00;
-	}
-
-	return undefined;
-};
-
-var encodings = {};
-
-encodings.ASCII = { // GSM 03.38
-	match: function(value) {
-		return gsmCoder.GSM.charRegex.test(value);
+	
+		return result.replace(escCharRegex, function(match, p1) {
+			return coder.extCharListDec[p1];
+		});
 	},
-	encode: function(value) {
-		return gsmCoder.encode(value, 0x00);
+	getCoder: function(encoding) {
+		var coder = this.GSM;
+		switch (encoding) {
+			case 0x01:
+				coder = this.GSM_TR;
+				break;
+			case 0x02:
+				coder = this.GSM_ES;
+				break;
+			case 0x03:
+				coder = this.GSM_PT;
+				break;
+		}
+	
+		if (Object.keys(coder.charListEnc).length === 0) {
+			for (var i = 0; i < coder.chars.length; i++) {
+				coder.charListEnc[coder.chars[i]] = i;
+				coder.charListDec[i] = coder.chars[i];
+			}
+	
+			var extCharsEnc = coder.extCharsEnc || coder.extChars;
+			var escCharsEnc = coder.escCharsEnc || coder.escChars;
+			for (var i = 0; i < extCharsEnc.length; i++) {
+				coder.extCharListEnc[extCharsEnc[i]] = escCharsEnc[i];
+			}
+	
+			var extCharsDec = coder.extCharsDec || coder.extChars;
+			var escCharsDec = coder.escCharsDec || coder.escChars;
+			for (var i = 0; i < escCharsDec.length; i++) {
+				coder.extCharListDec[escCharsDec[i]] = extCharsDec[i];
+			}
+		}
+	
+		return coder;
 	},
-	decode: function(value) {
-		return gsmCoder.decode(value, 0x00);
+	detect: function (string) {
+		if (gsmCoder.GSM_ES.charRegex.test(string)) {
+			return 0x02;
+		}
+	
+		if (gsmCoder.GSM_PT.charRegex.test(string)) {
+			return 0x03;
+		}
+	
+		if (gsmCoder.GSM_TR.charRegex.test(string)) {
+			return 0x01;
+		}
+	
+		if (gsmCoder.GSM.charRegex.test(string)) {
+			return 0x00;
+		}
+	
+		return undefined;
 	}
-};
+} as const;
 
-encodings.LATIN1 = {
-	match: function(value) {
-		return value === iconv.decode(iconv.encode(value, 'latin1'), 'latin1');
+const encodings = {
+	ASCII: { // GSM 03.38
+		match: function(value) {
+			return gsmCoder.GSM.charRegex.test(value);
+		},
+		encode: function(value) {
+			return gsmCoder.encode(value, 0x00);
+		},
+		decode: function(value) {
+			return gsmCoder.decode(value, 0x00);
+		}
 	},
-	encode: function(value) {
-		return iconv.encode(value, 'latin1');
+	LATIN1: {
+		match: function(value) {
+			return value === iconv.decode(iconv.encode(value, 'latin1'), 'latin1');
+		},
+		encode: function(value) {
+			return iconv.encode(value, 'latin1');
+		},
+		decode: function(value) {
+			return iconv.decode(value, 'latin1');
+		}
 	},
-	decode: function(value) {
-		return iconv.decode(value, 'latin1');
-	}
-};
-
-encodings.UCS2 = {
-	match: function(value) {
-		return true;
+	UCS2: {
+		match: function(value) {
+			return true;
+		},
+		encode: function(value) {
+			return iconv.encode(value, 'utf16-be');
+		},
+		decode: function(value) {
+			return iconv.decode(value, 'utf16-be');
+		}
 	},
-	encode: function(value) {
-		return iconv.encode(value, 'utf16-be');
-	},
-	decode: function(value) {
-		return iconv.decode(value, 'utf16-be');
-	}
-};
-
-Object.defineProperty(encodings, 'detect', {
-	value: function(value) {
+	default: 'ASCII' as string,
+	detect: function(value) {
 		for (var key in encodings) {
 			if (encodings[key].match(value)) {
 				return key;
 			}
 		}
+		
 		return false;
 	}
-});
+} as const;
 
-Object.defineProperty(encodings, 'default', {
-	value: 'ASCII',
-	writable: true
-});
-
-var udhCoder = {};
-
-/**
- * @param buffer:Buffer
- *
- * @return Array
- */
-udhCoder.getUdh = function(buffer) {
-	var bufferLength = buffer.length;
-
-	if (bufferLength <= 1) {
-		return [];
+const udhCoder = {
+	getUdh: function(buffer: Buffer): Array<any> {
+		var bufferLength = buffer.length;
+	
+		if (bufferLength <= 1) {
+			return [];
+		}
+	
+		var udhList = [];
+	
+		var cursor = 1;
+		do {
+			var udhLength = buffer[cursor + 1] + 2;
+			udhList.push(buffer.slice(cursor, cursor + udhLength));
+			cursor += udhLength;
+		} while (cursor < bufferLength);
+	
+		return udhList;
 	}
+} as const;
 
-	var udhList = [];
-
-	var cursor = 1;
-	do {
-		var udhLength = buffer[cursor + 1] + 2;
-		udhList.push(buffer.slice(cursor, cursor + udhLength));
-		cursor += udhLength;
-	} while (cursor < bufferLength);
-
-	return udhList;
-};
-
-var filters = {};
-
-filters.time = {
-	encode: function(value) {
-		if (!value) {
-			return value;
-		}
-		if (typeof value == 'string') {
-			if (value.length <= 12) {
-				value = ('000000000000' + value).substr(-12) + '000R';
+const filters = {
+	message: {
+		encode: function(value) {
+			if (Buffer.isBuffer(value)) {
+				return value;
 			}
-			return value;
-		}
-		if (value instanceof Date) {
-			var result = value.getUTCFullYear().toString().substr(-2);
-			result += ('0' + (value.getUTCMonth() + 1)).substr(-2);
-			result += ('0' + value.getUTCDate()).substr(-2);
-			result += ('0' + value.getUTCHours()).substr(-2);
-			result += ('0' + value.getUTCMinutes()).substr(-2);
-			result += ('0' + value.getUTCSeconds()).substr(-2);
-			result += ('00' + value.getUTCMilliseconds()).substr(-3, 1);
-			result += '00+';
-			return result;
-		}
-		return value;
-	},
-	decode: function(value) {
-		if (!value || typeof value != 'string') {
-			return value;
-		}
-		if (value.substr(-1) == 'R') {
-			var result = new Date();
-			var match = value.match(/^(..)(..)(..)(..)(..)(..).*$/);
-			['FullYear', 'Month', 'Date', 'Hours', 'Minutes', 'Seconds'].forEach(
-				function(method, i) {
-					result['set' + method](result['get' + method]() + +match[++i]);
-				}
-			);
-			return result;
-		}
-		var century = ('000' + new Date().getUTCFullYear()).substr(-4, 2);
-		var result = new Date(value.replace(
-			/^(..)(..)(..)(..)(..)(..)(.)?.*$/,
-			century + '$1-$2-$3 $4:$5:$6:$700 UTC'
-		));
-		var match = value.match(/(..)([-+])$/);
-		if (match && match[1] != '00') {
-			var diff = match[1] * 15;
-			if (match[2] == '+') {
-				diff = -diff;
-			}
-			result.setMinutes(result.getMinutes() + diff);
-		}
-		return result;
-	}
-};
-
-filters.message = {
-	encode: function(value) {
-		if (Buffer.isBuffer(value)) {
-			return value;
-		}
-		var message = typeof value === 'string' ? value : value.message;
-		if (typeof message === 'string' && message) {
-			var encoded = false;
-			if (value.udh) {
-				var udhList = udhCoder.getUdh(value.udh);
-				for (var i = 0; i < udhList.length; i++) {
-					var udh = udhList[i];
-					if (udh[0] === 0x24 || udh[0] === 0x25) {
-						this.data_coding = consts.ENCODING.ASCII;
-						message = gsmCoder.encode(message, udh[2]);
-						encoded = true;
-						break;
-					}
-				}
-			}
-			if (!encoded) {
-				var encoding = encodings.default;
-				if (this.data_coding === null) {
-					encoding = encodings.detect(message);
-					this.data_coding = consts.ENCODING[encoding];
-				} else if (this.data_coding !== consts.ENCODING.SMSC_DEFAULT) {
-					for (var key in consts.ENCODING) {
-						if (consts.ENCODING[key] === this.data_coding) {
-							encoding = key;
+			var message = typeof value === 'string' ? value : value.message;
+			if (typeof message === 'string' && message) {
+				var encoded = false;
+				if (value.udh) {
+					var udhList = udhCoder.getUdh(value.udh);
+					for (var i = 0; i < udhList.length; i++) {
+						var udh = udhList[i];
+						if (udh[0] === 0x24 || udh[0] === 0x25) {
+							this.data_coding = consts.ENCODING.ASCII;
+							message = gsmCoder.encode(message, udh[2]);
+							encoded = true;
 							break;
 						}
 					}
 				}
-				message = encodings[encoding].encode(message);
-			}
-		}
-		if (!value.udh || !value.udh.length) {
-			return message;
-		}
-		if ('esm_class' in this) {
-			this.esm_class = this.esm_class | consts.ESM_CLASS.UDH_INDICATOR;
-		}
-		return Buffer.concat([value.udh, message]);
-	},
-	decode: function(value, skipUdh) {
-		if (!Buffer.isBuffer(value) || !('data_coding' in this)) {
-			return value;
-		}
-		var encoding = this.data_coding & 0x0F;
-		if (!encoding) {
-			encoding = encodings.default;
-		} else {
-			for (var key in consts.ENCODING) {
-				if (consts.ENCODING[key] == encoding) {
-					encoding = key;
-					break;
+				if (!encoded) {
+					var encoding = encodings.default;
+					if (this.data_coding === null) {
+						// @ts-expect-error some weirdness here
+						encoding = encodings.detect(message);
+						this.data_coding = consts.ENCODING[encoding];
+					} else if (this.data_coding !== consts.ENCODING.SMSC_DEFAULT) {
+						for (var key in consts.ENCODING) {
+							if (consts.ENCODING[key] === this.data_coding) {
+								encoding = key;
+								break;
+							}
+						}
+					}
+					message = encodings[encoding].encode(message);
 				}
 			}
-		}
-		var udhi = this.esm_class & (consts.ESM_CLASS.UDH_INDICATOR || consts.ESM_CLASS.KANNEL_UDH_INDICATOR);
-		var result = {};
-		if (!skipUdh && value.length && udhi) {
-			result.udh = udhCoder.getUdh(value.slice(0, value[0] + 1));
-			result.message = value.slice(value[0] + 1);
-		} else {
-			result.message = value;
-		}
-		if (result.udh && (encoding === consts.ENCODING.SMSC_DEFAULT || consts.ENCODING.ASCII)) {
-			var decoded = false;
-			for (var i = 0; i < result.udh.length; i++) {
-				var udh = result.udh[i];
-				if (udh[0] === 0x24 || udh[0] === 0x25) {
-					result.message = gsmCoder.decode(result.message, udh[2]);
-					decoded = true;
-					break;
+			if (!value.udh || !value.udh.length) {
+				return message;
+			}
+			if ('esm_class' in this) {
+				this.esm_class = this.esm_class | consts.ESM_CLASS.UDH_INDICATOR;
+			}
+			return Buffer.concat([value.udh, message]);
+		},
+		decode: function(value, skipUdh) {
+			if (!Buffer.isBuffer(value) || !('data_coding' in this)) {
+				return value;
+			}
+			var encoding = this.data_coding & 0x0F;
+			if (!encoding) {
+				// @ts-expect-error some weirdness here
+				encoding = encodings.default;
+			} else {
+				for (var key in consts.ENCODING) {
+					if (consts.ENCODING[key] == encoding) {
+						// @ts-expect-error some weirdness here
+						encoding = key;
+						break;
+					}
 				}
 			}
-			if (!decoded && encodings[encoding]) {
-				result.message = encodings[encoding].decode(result.message);
+			var udhi = this.esm_class & (consts.ESM_CLASS.UDH_INDICATOR || consts.ESM_CLASS.KANNEL_UDH_INDICATOR);
+			var result = {};
+			if (!skipUdh && value.length && udhi) {
+				result['udh'] = udhCoder.getUdh(value.slice(0, value[0] + 1));
+				result['message'] = value.slice(value[0] + 1);
+			} else {
+				result['message'] = value;
 			}
-		} else if (encodings[encoding]) {
-			result.message = encodings[encoding].decode(result.message);
+			if (result['udh'] && (encoding === consts.ENCODING.SMSC_DEFAULT || consts.ENCODING.ASCII)) {
+				var decoded = false;
+				for (var i = 0; i < result['udh'].length; i++) {
+					var udh = result['udh'][i];
+					if (udh[0] === 0x24 || udh[0] === 0x25) {
+						result['message'] = gsmCoder.decode(result['message'], udh[2]);
+						decoded = true;
+						break;
+					}
+				}
+				if (!decoded && encodings[encoding]) {
+					result['message'] = encodings[encoding].decode(result['message']);
+				}
+			} else if (encodings[encoding]) {
+				result['message'] = encodings[encoding].decode(result['message']);
+			}
+			return result;
 		}
-		return result;
-	}
-};
-
-filters.billing_identification = {
-	encode: function(value) {
-		if (Buffer.isBuffer(value)) {
-			return value;
-		}
-		var result = Buffer.alloc(value.data.length + 1);
-		result.writeUInt8(value.format, 0);
-		value.data.copy(result, 1);
-		return result;
 	},
-	decode: function(value) {
-		if (!Buffer.isBuffer(value)) {
-			return value;
-		}
-		return {
-			format: value.readUInt8(0),
-			data: value.slice(1)
-		};
-	}
-};
-
-filters.broadcast_area_identifier = {
-	encode: function(value) {
-		if (Buffer.isBuffer(value)) {
-			return value;
-		}
-		if (typeof value == 'string') {
-			value = {
-				format: consts.BROADCAST_AREA_FORMAT.NAME,
-				data: value
+	callback_num: {
+		encode: function(value) {
+			if (Buffer.isBuffer(value)) {
+				return value;
+			}
+			var result = Buffer.alloc(value.number.length + 3);
+			result.writeUInt8(value.digit_mode || 0, 0);
+			result.writeUInt8(value.ton || 0, 1);
+			result.writeUInt8(value.npi || 0, 2);
+			result.write(value.number, 3, 'ascii');
+			return result;
+		},
+		decode: function(value) {
+			if (!Buffer.isBuffer(value)) {
+				return value;
+			}
+			return {
+				digit_mode: value.readUInt8(0),
+				ton: value.readUInt8(1),
+				npi: value.readUInt8(2),
+				number: value.toString('ascii', 3)
 			};
 		}
-		if (typeof value.data == 'string') {
-			value.data = Buffer.from(value.data, 'ascii');
-		}
-		var result = Buffer.alloc(value.data.length + 1);
-		result.writeUInt8(value.format, 0);
-		value.data.copy(result, 1);
-		return result;
 	},
-	decode: function(value) {
-		if (!Buffer.isBuffer(value)) {
-			return value;
+	broadcast_frequency_interval: {
+		encode: function(value) {
+			if (Buffer.isBuffer(value)) {
+				return value;
+			}
+			var result = Buffer.alloc(3);
+			result.writeUInt8(value.unit, 0);
+			result.writeUInt16BE(value.interval, 1);
+			return result;
+		},
+		decode: function(value) {
+			if (!Buffer.isBuffer(value)) {
+				return value;
+			}
+			return {
+				unit: value.readUInt8(0),
+				interval: value.readUInt16BE(1)
+			};
 		}
-		var result = {
-			format: value.readUInt8(0),
-			data: value.slice(1)
-		};
-		if (result.format == consts.BROADCAST_AREA_FORMAT.NAME) {
-			result.data = result.data.toString('ascii');
-		}
-		return result;
-	}
-};
-
-filters.broadcast_content_type = {
-	encode: function(value) {
-		if (Buffer.isBuffer(value)) {
-			return value;
-		}
-		var result = Buffer.alloc(3);
-		result.writeUInt8(value.network, 0);
-		result.writeUInt16BE(value.content_type, 1);
-		return result;
 	},
-	decode: function(value) {
-		if (!Buffer.isBuffer(value)) {
-			return value;
+	broadcast_content_type: {
+		encode: function(value) {
+			if (Buffer.isBuffer(value)) {
+				return value;
+			}
+			var result = Buffer.alloc(3);
+			result.writeUInt8(value.network, 0);
+			result.writeUInt16BE(value.content_type, 1);
+			return result;
+		},
+		decode: function(value) {
+			if (!Buffer.isBuffer(value)) {
+				return value;
+			}
+			return {
+				network: value.readUInt8(0),
+				content_type: value.readUInt16BE(1)
+			};
 		}
-		return {
-			network: value.readUInt8(0),
-			content_type: value.readUInt16BE(1)
-		};
-	}
-};
-
-filters.broadcast_frequency_interval = {
-	encode: function(value) {
-		if (Buffer.isBuffer(value)) {
-			return value;
-		}
-		var result = Buffer.alloc(3);
-		result.writeUInt8(value.unit, 0);
-		result.writeUInt16BE(value.interval, 1);
-		return result;
 	},
-	decode: function(value) {
-		if (!Buffer.isBuffer(value)) {
-			return value;
+	billing_identification: {
+		encode: function(value) {
+			if (Buffer.isBuffer(value)) {
+				return value;
+			}
+			var result = Buffer.alloc(value.data.length + 1);
+			result.writeUInt8(value.format, 0);
+			value.data.copy(result, 1);
+			return result;
+		},
+		decode: function(value) {
+			if (!Buffer.isBuffer(value)) {
+				return value;
+			}
+			return {
+				format: value.readUInt8(0),
+				data: value.slice(1)
+			};
 		}
-		return {
-			unit: value.readUInt8(0),
-			interval: value.readUInt16BE(1)
-		};
-	}
-};
-
-filters.callback_num = {
-	encode: function(value) {
-		if (Buffer.isBuffer(value)) {
-			return value;
-		}
-		var result = Buffer.alloc(value.number.length + 3);
-		result.writeUInt8(value.digit_mode || 0, 0);
-		result.writeUInt8(value.ton || 0, 1);
-		result.writeUInt8(value.npi || 0, 2);
-		result.write(value.number, 3, 'ascii');
-		return result;
 	},
-	decode: function(value) {
-		if (!Buffer.isBuffer(value)) {
-			return value;
+	broadcast_area_identifier: {
+		encode: function(value) {
+			if (Buffer.isBuffer(value)) {
+				return value;
+			}
+			if (typeof value == 'string') {
+				value = {
+					format: consts.BROADCAST_AREA_FORMAT.NAME,
+					data: value
+				};
+			}
+			if (typeof value.data == 'string') {
+				value.data = Buffer.from(value.data, 'ascii');
+			}
+			var result = Buffer.alloc(value.data.length + 1);
+			result.writeUInt8(value.format, 0);
+			value.data.copy(result, 1);
+			return result;
+		},
+		decode: function(value) {
+			if (!Buffer.isBuffer(value)) {
+				return value;
+			}
+			var result = {
+				format: value.readUInt8(0),
+				data: value.slice(1)
+			};
+			if (result.format == consts.BROADCAST_AREA_FORMAT.NAME) {
+				result.data = Buffer.from(result.data.toString('ascii'));
+			}
+			return result;
 		}
-		return {
-			digit_mode: value.readUInt8(0),
-			ton: value.readUInt8(1),
-			npi: value.readUInt8(2),
-			number: value.toString('ascii', 3)
-		};
-	}
-};
-
-filters.callback_num_atag = {
-	encode: function(value) {
-		if (Buffer.isBuffer(value)) {
-			return value;
-		}
-		var result = Buffer.alloc(value.display.length + 1);
-		result.writeUInt8(value.encoding, 0);
-		if (typeof value.display == 'string') {
-			value.display = Buffer.from(value.display, 'ascii');
-		}
-		value.display.copy(result, 1);
-		return result;
 	},
-	decode: function(value) {
-		if (!Buffer.isBuffer(value)) {
+	time: {
+		encode: function(value) {
+			if (!value) {
+				return value;
+			}
+			if (typeof value == 'string') {
+				if (value.length <= 12) {
+					value = ('000000000000' + value).substr(-12) + '000R';
+				}
+				return value;
+			}
+			if (value instanceof Date) {
+				var result = value.getUTCFullYear().toString().substr(-2);
+				result += ('0' + (value.getUTCMonth() + 1)).substr(-2);
+				result += ('0' + value.getUTCDate()).substr(-2);
+				result += ('0' + value.getUTCHours()).substr(-2);
+				result += ('0' + value.getUTCMinutes()).substr(-2);
+				result += ('0' + value.getUTCSeconds()).substr(-2);
+				result += ('00' + value.getUTCMilliseconds()).substr(-3, 1);
+				result += '00+';
+				return result;
+			}
 			return value;
+		},
+		decode: function(value) {
+			if (!value || typeof value != 'string') {
+				return value;
+			}
+			if (value.substr(-1) == 'R') {
+				var result = new Date();
+				var match = value.match(/^(..)(..)(..)(..)(..)(..).*$/);
+				['FullYear', 'Month', 'Date', 'Hours', 'Minutes', 'Seconds'].forEach(
+					function(method, i) {
+						result['set' + method](result['get' + method]() + +match[++i]);
+					}
+				);
+				return result;
+			}
+			var century = ('000' + new Date().getUTCFullYear()).substr(-4, 2);
+			var result = new Date(value.replace(
+				/^(..)(..)(..)(..)(..)(..)(.)?.*$/,
+				century + '$1-$2-$3 $4:$5:$6:$700 UTC'
+			));
+			var match = value.match(/(..)([-+])$/);
+			if (match && match[1] != '00') {
+				var diff = Number(match[1]) * 15;
+				if (match[2] == '+') {
+					diff = -diff;
+				}
+				result.setMinutes(result.getMinutes() + diff);
+			}
+			return result;
 		}
-		return {
-			encoding: value.readUInt8(0),
-			display: value.slice(1)
-		};
+	},
+	callback_num_atag: {
+		encode: function(value) {
+			if (Buffer.isBuffer(value)) {
+				return value;
+			}
+			var result = Buffer.alloc(value.display.length + 1);
+			result.writeUInt8(value.encoding, 0);
+			if (typeof value.display == 'string') {
+				value.display = Buffer.from(value.display, 'ascii');
+			}
+			value.display.copy(result, 1);
+			return result;
+		},
+		decode: function(value) {
+			if (!Buffer.isBuffer(value)) {
+				return value;
+			}
+			return {
+				encoding: value.readUInt8(0),
+				display: value.slice(1)
+			};
+		}
 	}
-};
+} as const;
 
-var tlvs = {
+const tlvs = {
 	dest_addr_subunit: {
 		id: 0x0005,
 		type: types.tlv.int8
@@ -1002,8 +996,14 @@ var tlvs = {
 	its_session_info: {
 		id: 0x1383,
 		type: types.tlv.buffer
+	},
+	get alert_on_msg_delivery() {
+		return this.alert_on_message_delivery;
+	},
+	get failed_broadcast_area_identifier() {
+		return this.broadcast_area_identifier
 	}
-};
+} as const;
 
 var tlvsById = {};
 
@@ -1012,10 +1012,7 @@ for (var tag in tlvs) {
 	tlvs[tag].tag = tag;
 }
 
-tlvs.alert_on_msg_delivery = tlvs.alert_on_message_delivery;
-tlvs.failed_broadcast_area_identifier = tlvs.broadcast_area_identifier;
-
-var commands = {
+const commands = {
 	alert_notification: {
 		id: 0x00000102,
 		params: {
@@ -1317,16 +1314,16 @@ var commands = {
 	unbind_resp: {
 		id: 0x80000006
 	}
-};
+} as const;
 
-var commandsById = {};
+const commandsById = {};
 
-for (var command in commands) {
-	commandsById[commands[command].id] = commands[command];
-	commands[command].command = command;
+for (const commandName in commands) {
+	commandsById[commands[commandName].id] = commands[commandName];
+	commands[commandName].command = commandName;
 }
 
-var consts = {
+const consts = {
 	REGISTERED_DELIVERY: {
 		FINAL:                    0x01,
 		FAILURE:                  0x02,
@@ -1427,7 +1424,7 @@ var consts = {
 		MONTHS:       0x0D,
 		YEARS:        0x0E
 	}
-};
+} as const;
 
 export const errors = {
 	ESME_ROK:                 0x0000,
@@ -1497,7 +1494,7 @@ export const errors = {
 	ESME_RINVBCAST_REP:       0x0110,
 	ESME_RINVBCASTSRVGRP:     0x0111,
 	ESME_RINVBCASTCHANIND:    0x0112
-};
+} as const;
 
 export { encodings };
 export { filters };
