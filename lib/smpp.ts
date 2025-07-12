@@ -59,8 +59,8 @@ function Session(options) {
 				if (self.socket) {
 					var e = new Error("Timeout of " + options.connectTimeout + "ms while connecting to " +
 						self.options.host + ":" + self.options.port);
-					e.code = "ETIMEOUT";
-					e.timeout = options.connectTimeout;
+					e['code'] = "ETIMEOUT";
+					e['timeout'] = options.connectTimeout;
 					self.socket.destroy(e);
 				}
 			}, options.connectTimeout);
@@ -460,29 +460,29 @@ exports.connect = exports.createSession = function(options, listener) {
 		listener = arguments[3];
 	} else if (typeof options == 'string') {
 		clientOptions = parse(options);
-		clientOptions.host = clientOptions.slashes ? clientOptions.hostname : options;
-		clientOptions.tls = clientOptions.protocol === 'ssmpp:';
+		clientOptions['host'] = clientOptions['slashes'] ? clientOptions['hostname'] : options;
+		clientOptions['tls'] = clientOptions['protocol'] === 'ssmpp:';
 	} else if (typeof options == 'function') {
 		listener = options;
 	} else {
 		clientOptions = options || {};
-		if (clientOptions.url) {
-			options = parse(clientOptions.url);
-			clientOptions.host = options.hostname;
-			clientOptions.port = options.port;
-			clientOptions.tls = options.protocol === 'ssmpp:';
+		if (clientOptions['url']) {
+			options = parse(clientOptions['url']);
+			clientOptions['host'] = options['hostname'];
+			clientOptions['port'] = options['port'];
+			clientOptions['tls'] = options['protocol'] === 'ssmpp:';
 		}
 	}
-    if (clientOptions.tls && !clientOptions.hasOwnProperty("rejectUnauthorized")) {
-		clientOptions.rejectUnauthorized = false; // Allow self signed certificates by default
+    if (clientOptions['tls'] && !clientOptions.hasOwnProperty("rejectUnauthorized")) {
+		clientOptions['rejectUnauthorized'] = false; // Allow self signed certificates by default
 	}
-	clientOptions.port = clientOptions.port || (clientOptions.tls ? 3550 : 2775);
-	clientOptions.debug = clientOptions.debug || false;
-	clientOptions.connectTimeout = clientOptions.connectTimeout || 30000;
+	clientOptions['port'] = clientOptions['port'] || (clientOptions['tls'] ? 3550 : 2775);
+	clientOptions['debug'] = clientOptions['debug'] || false;
+	clientOptions['connectTimeout'] = clientOptions['connectTimeout'] || 30000;
 
 	var session = new Session(clientOptions);
 	if (listener) {
-		session.on(clientOptions.tls ? 'secureConnect' : 'connect', function() {
+		session.on(clientOptions['tls'] ? 'secureConnect' : 'connect', function() {
 			listener(session);
 		});
 	}
