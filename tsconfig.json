@@ -5,9 +5,7 @@
     "forceConsistentCasingInFileNames": true,
     "isolatedModules": true,
     "declaration": true,
-    "lib": [
-      "ES2021"
-    ],
+    "lib": ["ES2021"],
     "module": "node16",
     "moduleResolution": "node16",
     "outDir": "dist",
@@ -16,10 +14,6 @@
     "skipLibCheck": true,
     "target": "ES2021"
   },
-  "include": [
-    "lib/**/*.ts"
-  ],
-  "exclude": [
-    "node_modules"
-  ]
+  "include": ["lib/**/*.ts"],
+  "exclude": ["node_modules"]
 }
