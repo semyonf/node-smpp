@@ -2,19 +2,18 @@
   "$schema": "./node_modules/@stryker-mutator/core/schema/stryker-schema.json",
   "packageManager": "npm",
   "buildCommand": "tsc",
-  "reporters": [
-    "html",
-    "clear-text",
-    "progress",
-    "dashboard"
-  ],
+  "reporters": ["html", "clear-text", "progress", "dashboard"],
   "testRunner": "mocha",
   "coverageAnalysis": "off",
   "mochaOptions": {
     "spec": ["test/**/*.js"]
   },
   "mutate": [
-    "lib/**/*.ts"
+    "lib/**/*.ts",
+    "!lib/commands.ts",
+    "!lib/errors.ts",
+    "!lib/tlvs.ts",
+    "!lib/consts.ts"
   ],
   "dashboard": {
     "project": "github.com/semyonf/node-smpp"
