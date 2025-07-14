@@ -1,6 +1,5 @@
 var assert = require('assert'),
-	filters = require('..').filters,
-	Buffer = require('safer-buffer').Buffer;
+	filters = require('..').filters
 
 describe('time', function() {
 	var pdu = {};

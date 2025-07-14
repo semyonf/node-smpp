@@ -1,5 +1,4 @@
 var assert = require('assert'),
-	Buffer = require('safer-buffer').Buffer;
   encodings = require('..').encodings;
 	gsmCoder = require('..').gsmCoder;
 

@@ -1,4 +1,3 @@
-import { Buffer } from 'safer-buffer';
 import * as defs from './defs';
 
 const commands = defs.commands,

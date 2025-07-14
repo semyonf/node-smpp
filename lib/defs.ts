@@ -1,7 +1,5 @@
-import { Buffer } from 'safer-buffer';
 import iconv from 'iconv-lite';
 import { consts } from './consts';
-import { tlvs } from './tlvs';
 
 const int8 = {
   read: function (buffer, offset) {

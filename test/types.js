@@ -1,6 +1,5 @@
 var assert = require('assert'),
-	types = require('..').types,
-	Buffer = require('safer-buffer').Buffer;
+	types = require('..').types
 
 describe('int8', function() {
 	var b = Buffer.from([0, 0x65]), expected = 0x65;
