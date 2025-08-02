@@ -48,32 +48,32 @@ jobs:
         env:
           NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Generate changelog
-        id: changelog
-        run: |
-          # Get the previous tag
-          PREVIOUS_TAG=$(git describe --tags --abbrev=0 HEAD~1 2>/dev/null || echo "")
-
-          # Generate changelog
-          if [ -n "$PREVIOUS_TAG" ]; then
-            echo "## What's Changed" > CHANGELOG.md
-            echo "" >> CHANGELOG.md
-            git log --pretty=format:"* %s (%h)" $PREVIOUS_TAG..HEAD >> CHANGELOG.md
-            echo "" >> CHANGELOG.md
-            echo "" >> CHANGELOG.md
-            echo "**Full Changelog**: https://github.com/semyonf/node-smpp/compare/$PREVIOUS_TAG...${{ github.ref_name }}" >> CHANGELOG.md
-          else
-            echo "## What's Changed" > CHANGELOG.md
-            echo "" >> CHANGELOG.md
-            git log --pretty=format:"* %s (%h)" >> CHANGELOG.md
-          fi
-
-          # Set changelog content as output
-          {
-            echo 'changelog<<EOF'
-            cat CHANGELOG.md
-            echo EOF
-          } >> $GITHUB_OUTPUT
+#      - name: Generate changelog
+#        id: changelog
+#        run: |
+#          # Get the previous tag
+#          PREVIOUS_TAG=$(git describe --tags --abbrev=0 HEAD~1 2>/dev/null || echo "")
+#
+#          # Generate changelog
+#          if [ -n "$PREVIOUS_TAG" ]; then
+#            echo "## What's Changed" > CHANGELOG.md
+#            echo "" >> CHANGELOG.md
+#            git log --pretty=format:"* %s (%h)" $PREVIOUS_TAG..HEAD >> CHANGELOG.md
+#            echo "" >> CHANGELOG.md
+#            echo "" >> CHANGELOG.md
+#            echo "**Full Changelog**: https://github.com/semyonf/node-smpp/compare/$PREVIOUS_TAG...${{ github.ref_name }}" >> CHANGELOG.md
+#          else
+#            echo "## What's Changed" > CHANGELOG.md
+#            echo "" >> CHANGELOG.md
+#            git log --pretty=format:"* %s (%h)" >> CHANGELOG.md
+#          fi
+#
+#          # Set changelog content as output
+#          {
+#            echo 'changelog<<EOF'
+#            cat CHANGELOG.md
+#            echo EOF
+#          } >> $GITHUB_OUTPUT
 
       - name: Create GitHub Release
         uses: actions/create-release@v1
