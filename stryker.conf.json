@@ -1,7 +1,7 @@
 {
   "$schema": "./node_modules/@stryker-mutator/core/schema/stryker-schema.json",
   "packageManager": "npm",
-  "buildCommand": "tsc",
+  "buildCommand": "npm run build",
   "reporters": ["html", "clear-text", "progress", "dashboard"],
   "testRunner": "mocha",
   "coverageAnalysis": "off",
@@ -15,6 +15,8 @@
     "!lib/tlvs.ts",
     "!lib/consts.ts"
   ],
+  "tempDirName": ".stryker-tmp",
+  "cleanTempDir": true,
   "dashboard": {
     "project": "github.com/semyonf/node-smpp"
   }
