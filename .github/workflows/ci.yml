@@ -41,4 +41,4 @@ jobs:
       - name: Run mutation tests
         env:
           STRYKER_DASHBOARD_API_KEY: ${{ secrets.STRYKER_DASHBOARD_API_KEY }}
-        run: npm run test:mutation -- --logLevel debug
+        run: npm run test:mutation
