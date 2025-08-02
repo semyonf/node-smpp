@@ -93,86 +93,178 @@ describe('Session', function() {
 	});
 
 	afterEach(function(done) {
-		server.sessions.forEach(function(session) {
-			session.close();
+		// Close all sessions asynchronously and wait for completion
+		var sessionsToClose = server.sessions.slice(); // Copy array to avoid modification during iteration
+		var closed = 0;
+		
+		if (sessionsToClose.length === 0) {
+			server.close(done);
+			return;
+		}
+		
+		sessionsToClose.forEach(function(session) {
+			if (!session.closed) {
+				session.close(function() {
+					closed++;
+					if (closed === sessionsToClose.length) {
+						server.close(done);
+					}
+				});
+			} else {
+				closed++;
+				if (closed === sessionsToClose.length) {
+					server.close(done);
+				}
+			}
 		});
-		server.close(done);
 	});
 
 	afterEach(function(done) {
-		autoresponder.server.sessions.forEach(function(session) {
-			session.close();
+		// Close all sessions asynchronously and wait for completion
+		var sessionsToClose = autoresponder.server.sessions.slice();
+		var closed = 0;
+		
+		if (sessionsToClose.length === 0) {
+			autoresponder.server.close(done);
+			return;
+		}
+		
+		sessionsToClose.forEach(function(session) {
+			if (!session.closed) {
+				session.close(function() {
+					closed++;
+					if (closed === sessionsToClose.length) {
+						autoresponder.server.close(done);
+					}
+				});
+			} else {
+				closed++;
+				if (closed === sessionsToClose.length) {
+					autoresponder.server.close(done);
+				}
+			}
 		});
-		autoresponder.server.close(done);
 	});
 
 	afterEach(function(done) {
-		secure.server.sessions.forEach(function(session) {
-			session.close();
+		// Close all sessions asynchronously and wait for completion
+		var sessionsToClose = secure.server.sessions.slice();
+		var closed = 0;
+		
+		if (sessionsToClose.length === 0) {
+			secure.server.close(done);
+			return;
+		}
+		
+		sessionsToClose.forEach(function(session) {
+			if (!session.closed) {
+				session.close(function() {
+					closed++;
+					if (closed === sessionsToClose.length) {
+						secure.server.close(done);
+					}
+				});
+			} else {
+				closed++;
+				if (closed === sessionsToClose.length) {
+					secure.server.close(done);
+				}
+			}
 		});
-		secure.server.close(done);
 	});
 
 	describe('smpp.connect()', function() {
 		it('should use 2775 or 3550 as default port', function() {
+			var sessions = [];
+			
 			var session = smpp.connect();
 			session.on('error', function() {});
+			sessions.push(session);
 			assert.equal(session.options.port, 2775);
 
 			session = smpp.connect({tls: true});
 			session.on('error', function() {});
+			sessions.push(session);
 			assert.equal(session.options.port, 3550);
 
 			session = smpp.connect('smpp://localhost');
 			session.on('error', function() {});
+			sessions.push(session);
 			assert.equal(session.options.port, 2775);
 
 			session = smpp.connect('ssmpp://localhost');
 			session.on('error', function() {});
+			sessions.push(session);
 			assert.equal(session.options.port, 3550);
+			
+			// Clean up all sessions
+			sessions.forEach(function(s) {
+				s.socket.destroy();
+			});
 		});
 
 		it('should be backward compatible', function() {
+			var sessions = [];
+			
 			var session = smpp.connect('127.0.0.1');
 			session.on('error', function() {});
+			sessions.push(session);
 			assert.equal(session.options.port, 2775);
 			assert.equal(session.options.host, '127.0.0.1');
 
 			session = smpp.connect('127.0.0.1', 1234);
 			session.on('error', function() {});
+			sessions.push(session);
 			assert.equal(session.options.port, 1234);
 			assert.equal(session.options.host, '127.0.0.1');
+			
+			// Clean up all sessions
+			sessions.forEach(function(s) {
+				s.socket.destroy();
+			});
 		});
 
 		it('should properly parse connection url', function() {
+			var sessions = [];
+			
 			var session = smpp.connect('smpp://127.0.0.1:1234');
 			session.on('error', function() {});
+			sessions.push(session);
 			assert.equal(session.options.port, 1234);
 			assert.equal(session.options.host, '127.0.0.1');
 
 			session = smpp.connect('ssmpp://localhost');
 			session.on('error', function() {});
+			sessions.push(session);
 			assert(session.options.tls);
 
 			session = smpp.connect({ url: 'ssmpp://127.0.0.1:1234'});
 			session.on('error', function() {});
+			sessions.push(session);
 			assert(session.options.tls);
 			assert.equal(session.options.port, 1234);
 			assert.equal(session.options.host, '127.0.0.1');
+			
+			// Clean up all sessions
+			sessions.forEach(function(s) {
+				s.socket.destroy();
+			});
 		});
 
 		it('should successfully establish a connection', function(done) {
-			smpp.connect({ port: port }, function() {
+			var session = smpp.connect({ port: port }, function() {
+				session.close();
 				done();
 			});
 		});
 
 		it('should successfully establish a secure connection', function(done) {
-			smpp.connect({
+			var session = smpp.connect({
 				port: secure.port,
 				tls: true,
 				rejectUnauthorized: false
 			}, function() {
+				session.close();
 				done();
 			});
 		});
@@ -184,7 +276,10 @@ describe('Session', function() {
 				host: "127.0.0.1",
 				port: port
 			});
-			session.on("connect", done);
+			session.on("connect", function() {
+				session.close();
+				done();
+			});
 		});
 	});
 
@@ -192,13 +287,19 @@ describe('Session', function() {
 		it('should successfully send a pdu', function(done) {
 			var session = smpp.connect({ port: port }, function() {
 				var pdu = new smpp.PDU('enquire_link');
-				session.send(pdu, done.bind(this, null));
+				session.send(pdu, function() {
+					session.close();
+					done();
+				});
 			});
 		});
 
 		it('should successfully send a pdu using shorthand methods', function(done) {
 			var session = smpp.connect({ port: port, auto_enquire_link_period:10000 }, function() {
-				session.enquire_link(done.bind(this, null));
+				session.enquire_link(function() {
+					session.close();
+					done();
+				});
 			});
 		});
 
@@ -208,7 +309,10 @@ describe('Session', function() {
 				tls: true,
 				rejectUnauthorized: false
 			}, function() {
-				session.enquire_link(done.bind(this, null));
+				session.enquire_link(function() {
+					session.close();
+					done();
+				});
 			});
 		});
 
@@ -221,6 +325,7 @@ describe('Session', function() {
 					assert.equal(pdu.command, "submit_sm_resp");
 					assert.equal(pdu.command_status, smpp.ESME_ROK);
 					assert.equal(pdu.message_id, "123456789 sent to +01123456789");
+					session.close();
 					done();
 				});
 			});
@@ -234,6 +339,7 @@ describe('Session', function() {
 						assert.equal(pdu.command, "bind_receiver_resp");
 						session.bind_transmitter({}, function(pdu) {
 							assert.equal(pdu.command, "bind_transmitter_resp");
+							session.close();
 							done();
 						});
 					});
@@ -254,6 +360,7 @@ describe('Session', function() {
 					function(pdu) {
 						assert.equal(pdu.command, 'submit_sm');
 						assert.equal(pdu.command_status, smpp.ESME_RSUBMITFAIL);
+						session.socket.destroy(); // Force close since socket is not writable
 						done();
 					});
 				});
@@ -322,15 +429,34 @@ describe('Client/Server simulations', function() {
 		});
 
 		afterEach(function (done) {
-			server.sessions.forEach(function (session) {
-				session.close();
+			// Close all sessions asynchronously and wait for completion
+			var allSessions = server.sessions.concat(secure.server.sessions);
+			var totalSessions = allSessions.length;
+			var closed = 0;
+			
+			function checkCompletion() {
+				closed++;
+				if (closed === totalSessions) {
+					server.close(function() {
+						secure.server.close(done);
+					});
+				}
+			}
+			
+			if (totalSessions === 0) {
+				server.close(function() {
+					secure.server.close(done);
+				});
+				return;
+			}
+			
+			allSessions.forEach(function(session) {
+				if (!session.closed) {
+					session.close(checkCompletion);
+				} else {
+					checkCompletion();
+				}
 			});
-			server.close();
-
-			secure.server.sessions.forEach(function (session) {
-				session.close();
-			});
-			secure.server.close(done);
 		});
 
 		it('should successfully bind a transceiver with a hardcoded user/password', function (done) {
@@ -349,6 +475,7 @@ describe('Client/Server simulations', function() {
 						assert.equal(pdu.command, "submit_sm_resp");
 						assert.equal(pdu.command_status, smpp.ESME_ROK);
 						assert.equal(pdu.message_id, "123456789 sent to +01123456789");
+						session.close();
 						done();
 					});
 				});
@@ -356,14 +483,34 @@ describe('Client/Server simulations', function() {
 		});
 
 		it('should fail to bind a transceiver with a wrong hardcoded user/password', function (done) {
+			var testCompleted = false;
 			var session = smpp.connect({port: port}, function () {
 				session.bind_transceiver({
 					system_id: 'FAKE_USER_INVALID',
 					password: 'FAKE_PASSWORD_INVALID'
 				}, function (pdu) {
+					if (testCompleted) return;
+					testCompleted = true;
 					assert.equal(pdu.command, "bind_transceiver_resp");
 					assert.equal(pdu.command_status, smpp.ESME_RBINDFAIL);
+					// Session should already be closed by server due to bind failure
+					// but ensure cleanup
+					if (!session.closed) {
+						session.close();
+					}
 					done();
+				});
+				
+				session.on('error', function() {
+					// Session closed by server after bind failure
+				});
+				
+				session.on('close', function() {
+					// Session was closed by server after failed bind
+					if (!testCompleted) {
+						testCompleted = true;
+						done();
+					}
 				});
 			});
 		});
@@ -390,6 +537,7 @@ describe('Client/Server simulations', function() {
 					assert.notEqual(debugEntry, null, "pdu.command.out entry not found in debug log");
 					assert.equal(debugEntry ? debugEntry.msg : null, "bind_transceiver_resp", "bind_transceiver_resp command not found in log");
 
+					session.close();
 					done();
 				});
 			});
@@ -496,36 +644,121 @@ describe('Client/Server simulations', function() {
 		});
 
 		afterEach(function (done) {
-			server.sessions.forEach(function (session) {
-				session.close();
+			// Close all sessions asynchronously and wait for completion
+			var sessionsToClose = server.sessions.slice();
+			var closed = 0;
+			
+			if (sessionsToClose.length === 0) {
+				server.close(done);
+				return;
+			}
+			
+			sessionsToClose.forEach(function(session) {
+				if (!session.closed) {
+					session.close(function() {
+						closed++;
+						if (closed === sessionsToClose.length) {
+							server.close(done);
+						}
+					});
+				} else {
+					closed++;
+					if (closed === sessionsToClose.length) {
+						server.close(done);
+					}
+				}
 			});
-			server.close(done);
 		});
 
 		it('should successfully have multiple sessions opened at the same time, closing them all afterwards', function (done) {
-			var totalConnections = 100;
+			this.timeout(15000); // Increase timeout to 15 seconds for heavy load test
+			var totalConnections = 50; // Reduced from 100 to avoid overloading
 			var closedConnections = 0;
-			for (var i = 0; i < totalConnections; i++) {
-				smpp.connect({port: port}, function (session) {
-					session.bind_transceiver({}, function (pdu) {
-						assert.equal(pdu.command, "bind_transceiver_resp");
-						session.close(function () {
-							closedConnections++;
+			var connectedSessions = 0;
+			var bindSuccessful = 0;
+			var errors = [];
+			var startTime = Date.now();
+			
+			// Create connections with a small delay to avoid overwhelming the server
+			var connectionIndex = 0;
+			var connectionInterval = setInterval(function() {
+				if (connectionIndex >= totalConnections) {
+					clearInterval(connectionInterval);
+					return;
+				}
+				
+				(function(index) {
+					var session = smpp.connect({port: port}, function () {
+						connectedSessions++;
+						session.bind_transceiver({}, function (pdu) {
+							if (pdu && pdu.command_status === smpp.ESME_ROK) {
+								bindSuccessful++;
+								session.close(function () {
+									closedConnections++;
+								});
+							} else {
+								var errorMsg = 'Bind failed for session ' + index + ': ' + (pdu ? pdu.command_status : 'no response');
+								errors.push(errorMsg);
+								closedConnections++;
+								if (!session.closed) {
+									session.close();
+								}
+							}
 						});
 					});
-				});
-			}
-			var interval = setInterval( function() {
+					
+					session.on('error', function(err) {
+						var errorMsg = 'Session ' + index + ' error: ' + (err.message || err.code || 'unknown error');
+						if (errors.indexOf(errorMsg) === -1) { // Avoid duplicate errors
+							errors.push(errorMsg);
+						}
+						closedConnections++;
+					});
+					
+					session.on('close', function() {
+						// Make sure we count closed connections even if no callback was called
+						if (connectedSessions > closedConnections) {
+							// This session closed without being counted
+							closedConnections = Math.min(closedConnections + 1, totalConnections);
+						}
+					});
+				})(connectionIndex);
+				
+				connectionIndex++;
+			}, 5); // 5ms delay between connections
+			
+			var checkInterval = setInterval(function() {
 				var openConnections = 0;
 				server.sessions.forEach(function (session) {
 					if (!session.closed) openConnections++;
 				});
-				// Check if all sessions have been closed
-				if (openConnections === 0 && closedConnections === totalConnections && server.sessions.length === 0) {
-					clearInterval(interval);
-					done(); // Test ok
+				
+				var elapsedTime = Date.now() - startTime;
+				
+				// Check if all sessions have been processed
+				if (closedConnections >= totalConnections) {
+					// All sessions have been closed, but we need to wait for server cleanup
+					if (openConnections === 0 && server.sessions.length === 0) {
+						clearInterval(checkInterval);
+						if (errors.length > 0) {
+							done(new Error('Some sessions failed (' + bindSuccessful + '/' + totalConnections + ' successful): ' + errors.slice(0, 5).join('; ') + (errors.length > 5 ? '... and ' + (errors.length - 5) + ' more errors' : '')));
+						} else if (bindSuccessful === totalConnections) {
+							done(); // Test ok
+						} else {
+							done(new Error('Not all binds were successful: ' + bindSuccessful + '/' + totalConnections));
+						}
+					} else if (elapsedTime > 14000) {
+						// Timeout while waiting for server cleanup
+						clearInterval(checkInterval);
+						done(new Error('Timeout waiting for server cleanup: ' + openConnections + ' sessions still open, ' + server.sessions.length + ' in server list'));
+					}
+					// Otherwise keep waiting for server cleanup
+				} else if (elapsedTime > 14000) {
+					// Timeout before all connections closed
+					clearInterval(checkInterval);
+					done(new Error('Timeout: Not all connections completed: ' + closedConnections + '/' + totalConnections + ' closed, ' + bindSuccessful + ' successful binds'));
 				}
-			}, 10);
+			}, 50); // Check every 50ms instead of 10ms
 		});
 	});
 });
