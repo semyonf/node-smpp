@@ -37,7 +37,7 @@ jobs:
         with:
           node-version: '24'
           cache: 'npm'
-      - run: npm install
+      - run: npm ci
       - name: Run mutation tests
         env:
           STRYKER_DASHBOARD_API_KEY: ${{ secrets.STRYKER_DASHBOARD_API_KEY }}
