@@ -20,11 +20,11 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: Setup Node.js
+      - name: Setup Node.js for GitHub Packages
         uses: actions/setup-node@v4
         with:
           node-version: '18'
-          registry-url: 'https://npm.pkg.github.com'
+          registry-url: 'https://registry.npmjs.org'
           scope: '@semyonf'
 
       - name: Install dependencies
@@ -43,10 +43,10 @@ jobs:
       - name: Create package tarball
         run: npm pack
 
-      - name: Publish to GitHub Packages
-        run: npm publish
+      - name: Publish to NPM
+        run: npm publish --access public
         env:
-          NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
 
 #      - name: Generate changelog
 #        id: changelog
@@ -96,17 +96,3 @@ jobs:
           asset_path: ./semyonf-smpp-${{ steps.package-version.outputs.version }}.tgz
           asset_name: semyonf-smpp-${{ steps.package-version.outputs.version }}.tgz
           asset_content_type: application/gzip
-
-      - name: Create dist archive
-        run: |
-          cd dist && zip -r ../dist-${{ steps.package-version.outputs.version }}.zip . && cd ..
-
-      - name: Upload dist folder as artifact
-        uses: actions/upload-release-asset@v1
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        with:
-          upload_url: ${{ steps.create_release.outputs.upload_url }}
-          asset_path: ./dist-${{ steps.package-version.outputs.version }}.zip
-          asset_name: dist-${{ steps.package-version.outputs.version }}.zip
-          asset_content_type: application/zip

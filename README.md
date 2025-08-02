@@ -22,7 +22,15 @@ for a list of available operations and their parameters.
 
 ## Installation
 
+### This fork
+
+```bash
+npm install @semyonf/smpp
 ```
+
+### Original package
+
+```bash
 npm install smpp
 ```
 
