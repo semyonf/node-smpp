@@ -30,7 +30,7 @@ jobs:
   mutation-test:
     needs: [build-and-test]
     if: github.ref == 'refs/heads/master'
-    runs-on: ubuntu-latest
+    runs-on: macos-latest
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v3
