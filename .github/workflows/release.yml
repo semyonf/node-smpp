@@ -93,8 +93,8 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
           upload_url: ${{ steps.create_release.outputs.upload_url }}
-          asset_path: ./smpp-${{ steps.package-version.outputs.version }}.tgz
-          asset_name: smpp-${{ steps.package-version.outputs.version }}.tgz
+          asset_path: ./semyonf-smpp-${{ steps.package-version.outputs.version }}.tgz
+          asset_name: semyonf-smpp-${{ steps.package-version.outputs.version }}.tgz
           asset_content_type: application/gzip
 
       - name: Create dist archive
