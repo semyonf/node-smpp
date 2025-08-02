@@ -23,6 +23,8 @@
     "!lib/consts.ts"
   ],
   "tempDirName": ".stryker-tmp",
+  "timeoutFactor": 2.5,
+  "timeoutMS": 120000,
   "cleanTempDir": true,
   "dashboard": {
     "project": "github.com/semyonf/node-smpp"
