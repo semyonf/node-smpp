@@ -1,0 +1,115 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v[0-9]+.[0-9]+.[0-9]+'
+      - 'v[0-9]+.[0-9]+.[0-9]+-*'
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      packages: write
+      id-token: write
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '18'
+          registry-url: 'https://npm.pkg.github.com'
+          scope: '@semyonf'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Run linting
+        run: npm run lint
+
+      - name: Build TypeScript
+        run: npm run build
+
+      - name: Run tests
+        run: npm test
+
+      - name: Get package version
+        id: package-version
+        run: echo "version=$(node -p "require('./package.json').version")" >> $GITHUB_OUTPUT
+
+      - name: Create package tarball
+        run: npm pack
+
+      - name: Publish to GitHub Packages
+        run: npm publish
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Generate changelog
+        id: changelog
+        run: |
+          # Get the previous tag
+          PREVIOUS_TAG=$(git describe --tags --abbrev=0 HEAD~1 2>/dev/null || echo "")
+
+          # Generate changelog
+          if [ -n "$PREVIOUS_TAG" ]; then
+            echo "## What's Changed" > CHANGELOG.md
+            echo "" >> CHANGELOG.md
+            git log --pretty=format:"* %s (%h)" $PREVIOUS_TAG..HEAD >> CHANGELOG.md
+            echo "" >> CHANGELOG.md
+            echo "" >> CHANGELOG.md
+            echo "**Full Changelog**: https://github.com/semyonf/node-smpp/compare/$PREVIOUS_TAG...${{ github.ref_name }}" >> CHANGELOG.md
+          else
+            echo "## What's Changed" > CHANGELOG.md
+            echo "" >> CHANGELOG.md
+            git log --pretty=format:"* %s (%h)" >> CHANGELOG.md
+          fi
+
+          # Set changelog content as output
+          {
+            echo 'changelog<<EOF'
+            cat CHANGELOG.md
+            echo EOF
+          } >> $GITHUB_OUTPUT
+
+      - name: Create GitHub Release
+        uses: actions/create-release@v1
+        id: create_release
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          tag_name: ${{ github.ref_name }}
+          release_name: Release ${{ github.ref_name }}
+          body: ${{ steps.changelog.outputs.changelog }}
+          draft: false
+          prerelease: ${{ contains(github.ref_name, '-') }}
+
+      - name: Upload package tarball to release
+        uses: actions/upload-release-asset@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          upload_url: ${{ steps.create_release.outputs.upload_url }}
+          asset_path: ./smpp-${{ steps.package-version.outputs.version }}.tgz
+          asset_name: smpp-${{ steps.package-version.outputs.version }}.tgz
+          asset_content_type: application/gzip
+
+      - name: Create dist archive
+        run: |
+          cd dist && zip -r ../dist-${{ steps.package-version.outputs.version }}.zip . && cd ..
+
+      - name: Upload dist folder as artifact
+        uses: actions/upload-release-asset@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          upload_url: ${{ steps.create_release.outputs.upload_url }}
+          asset_path: ./dist-${{ steps.package-version.outputs.version }}.zip
+          asset_name: dist-${{ steps.package-version.outputs.version }}.zip
+          asset_content_type: application/zip
