@@ -35,7 +35,7 @@ class Session extends EventEmitter {
   public remotePort: number | null = null;
   public proxyProtocolProxy: any = null;
   private _busy: boolean = false;
-  private _callbacks = {};
+  private _callbacks: Record<number, { callback: Function; timeout: NodeJS.Timeout; failureCallback?: Function }> = {};
   private _interval: NodeJS.Timeout | 0 = 0;
   private _command_length: number | null = null;
   private _mode: string | null = null;
@@ -129,6 +129,7 @@ class Session extends EventEmitter {
     this.socket.on('close', function () {
       self.closed = true;
       clearTimeout(connectTimeout);
+      self._cleanupPendingCallbacks(new Error('Connection closed'));
       if (self._mode === 'server') {
         self.debug('client.disconnected', 'client has disconnected');
         self.emitMetric('client.disconnected', 1);
@@ -144,6 +145,7 @@ class Session extends EventEmitter {
     });
     this.socket.on('error', function (e) {
       clearTimeout(connectTimeout);
+      self._cleanupPendingCallbacks(e);
       if (self._interval) {
         clearInterval(self._interval);
         self._interval = 0;
@@ -247,7 +249,9 @@ class Session extends EventEmitter {
       this.emit('pdu', pdu);
       this.emit(pdu.command, pdu);
       if (pdu.isResponse() && this._callbacks[pdu.sequence_number]) {
-        this._callbacks[pdu.sequence_number](pdu);
+        const callbackInfo = this._callbacks[pdu.sequence_number];
+        clearTimeout(callbackInfo.timeout);
+        callbackInfo.callback(pdu);
         delete this._callbacks[pdu.sequence_number];
       }
     }
@@ -279,7 +283,32 @@ class Session extends EventEmitter {
         pdu.sequence_number = ++this.sequence;
       }
       if (responseCallback) {
-        this._callbacks[pdu.sequence_number] = responseCallback;
+        const responseTimeout = this.options.response_timeout || 60000; // Default 60 seconds
+        const timeoutHandle = setTimeout(() => {
+          if (this._callbacks[pdu.sequence_number]) {
+            delete this._callbacks[pdu.sequence_number];
+            const timeoutError = new Error('Response timeout');
+            timeoutError['code'] = 'ESME_RESPONSE_TIMEOUT';
+            this.debug('pdu.command.timeout', pdu.command, {
+              sequence_number: pdu.sequence_number,
+              timeout: responseTimeout
+            });
+            this.emitMetric('pdu.command.timeout', 1, {
+              pdu: pdu,
+              timeout: responseTimeout
+            });
+            if (failureCallback) {
+              pdu.command_status = defs.errors.ESME_RSUBMITFAIL;
+              failureCallback(pdu, timeoutError);
+            }
+          }
+        }, responseTimeout);
+
+        this._callbacks[pdu.sequence_number] = {
+          callback: responseCallback,
+          timeout: timeoutHandle,
+          failureCallback: failureCallback
+        };
       }
     } else if (responseCallback && !sendCallback) {
       sendCallback = responseCallback;
@@ -301,6 +330,8 @@ class Session extends EventEmitter {
             pdu: pdu,
           });
           if (!pdu.isResponse() && this._callbacks[pdu.sequence_number]) {
+            const callbackInfo = this._callbacks[pdu.sequence_number];
+            clearTimeout(callbackInfo.timeout);
             delete this._callbacks[pdu.sequence_number];
           }
           if (failureCallback) {
@@ -318,6 +349,27 @@ class Session extends EventEmitter {
       }.bind(this)
     );
     return true;
+  }
+
+  private _cleanupPendingCallbacks(error?: Error) {
+    const pendingSequenceNumbers = Object.keys(this._callbacks);
+    if (pendingSequenceNumbers.length > 0) {
+      this.debug('callbacks.cleanup', 'cleaning up pending callbacks', {
+        count: pendingSequenceNumbers.length
+      });
+      this.emitMetric('callbacks.cleanup', pendingSequenceNumbers.length, {
+        count: pendingSequenceNumbers.length
+      });
+    }
+    for (const sequenceNumber of pendingSequenceNumbers) {
+      const callbackInfo = this._callbacks[sequenceNumber];
+      clearTimeout(callbackInfo.timeout);
+      if (callbackInfo.failureCallback) {
+        const pdu = { command_status: defs.errors.ESME_RSUBMITFAIL } as any;
+        callbackInfo.failureCallback(pdu, error || new Error('Connection closed'));
+      }
+      delete this._callbacks[sequenceNumber];
+    }
   }
 
   pause() {

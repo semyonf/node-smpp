@@ -259,6 +259,67 @@ describe('Session', function() {
 				});
 			});
 		});
+
+		it('should timeout if no response is received', function(done) {
+			this.timeout(3000);
+			// Create a server that never responds to submit_sm
+			var silentServer = smpp.createServer({}, function(session) {
+				session.on('submit_sm', function(pdu) {
+					// Intentionally do not send response
+				});
+			});
+			silentServer.listen(0, function() {
+				var silentPort = silentServer.address().port;
+				var session = smpp.connect({ port: silentPort, response_timeout: 500 }, function() {
+					session.submit_sm({
+						destination_addr: "+01123456789",
+						short_message: "Hello!"
+					}, function(pdu) {
+						silentServer.close();
+						throw Error('Should not receive response');
+					},
+					null,
+					function(pdu, err) {
+						assert.equal(pdu.command_status, smpp.ESME_RSUBMITFAIL);
+						assert.ok(err);
+						assert.equal(err.code, 'ESME_RESPONSE_TIMEOUT');
+						session.close();
+						silentServer.close(done);
+					});
+				});
+			});
+		});
+
+		it('should call failure callback when connection closes with pending requests', function(done) {
+			// Create a server that accepts connections but doesn't respond
+			var silentServer = smpp.createServer({}, function(session) {
+				session.on('submit_sm', function(pdu) {
+					// Intentionally do not send response and close connection
+					setTimeout(function() {
+						session.close();
+					}, 100);
+				});
+			});
+			silentServer.listen(0, function() {
+				var silentPort = silentServer.address().port;
+				var session = smpp.connect({ port: silentPort, response_timeout: 10000 }, function() {
+					session.submit_sm({
+						destination_addr: "+01123456789",
+						short_message: "Hello!"
+					}, function(pdu) {
+						silentServer.close();
+						throw Error('Should not receive response');
+					},
+					null,
+					function(pdu, err) {
+						assert.equal(pdu.command_status, smpp.ESME_RSUBMITFAIL);
+						assert.ok(err);
+						assert.equal(err.message, 'Connection closed');
+						silentServer.close(done);
+					});
+				});
+			});
+		});
 	});
 
 });
