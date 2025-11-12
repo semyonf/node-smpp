@@ -1,6 +1,97 @@
 import iconv from 'iconv-lite';
 import { consts } from './consts';
 
+/**
+ * Interface for custom encoding implementations
+ */
+export interface Encoding {
+  /**
+   * Test if a value matches this encoding's character set
+   * @param value - The string to test
+   * @returns true if the value can be encoded with this encoding
+   */
+  match: (value: string) => boolean;
+
+  /**
+   * Encode a string to a buffer using this encoding
+   * @param value - The string to encode
+   * @returns The encoded buffer
+   */
+  encode: (value: string) => Buffer;
+
+  /**
+   * Decode a buffer to a string using this encoding
+   * @param value - The buffer to decode
+   * @returns The decoded string
+   */
+  decode: (value: Buffer | string) => string;
+}
+
+/**
+ * Interface for GSM coder definitions
+ */
+export interface GsmCoderDefinition {
+  /**
+   * Standard character set (128 characters)
+   */
+  chars: string;
+
+  /**
+   * Extended characters (escaped with 0x1B)
+   */
+  extChars?: string;
+
+  /**
+   * Extended characters for encoding (if different from extChars)
+   */
+  extCharsEnc?: string;
+
+  /**
+   * Extended characters for decoding (if different from extChars)
+   */
+  extCharsDec?: string;
+
+  /**
+   * Escape characters for encoding
+   */
+  escChars?: string;
+
+  /**
+   * Escape characters for encoding (if different from escChars)
+   */
+  escCharsEnc?: string;
+
+  /**
+   * Escape characters for decoding (if different from escChars)
+   */
+  escCharsDec?: string;
+
+  /**
+   * Regular expression to validate if a string can be encoded with this coder
+   */
+  charRegex: RegExp;
+
+  /**
+   * Character lookup table for encoding (initialized lazily)
+   */
+  charListEnc: { [key: string]: number };
+
+  /**
+   * Extended character lookup table for encoding (initialized lazily)
+   */
+  extCharListEnc: { [key: string]: string };
+
+  /**
+   * Character lookup table for decoding (initialized lazily)
+   */
+  charListDec: { [key: number]: string };
+
+  /**
+   * Extended character lookup table for decoding (initialized lazily)
+   */
+  extCharListDec: { [key: string]: string };
+}
+
 const int8 = {
   read: function (buffer, offset) {
     return buffer.readUInt8(offset);
@@ -241,7 +332,17 @@ const types = {
   },
 } as const;
 
-const gsmCoder = {
+const gsmCoder: {
+  [key: string]: any;
+  GSM: GsmCoderDefinition;
+  GSM_TR: GsmCoderDefinition;
+  GSM_ES: GsmCoderDefinition;
+  GSM_PT: GsmCoderDefinition;
+  encode: (string: string, encoding: number) => Buffer;
+  decode: (string: Buffer | string, encoding: number) => string;
+  getCoder: (encoding: number) => GsmCoderDefinition;
+  detect: (string: string) => number | undefined;
+} = {
   // GSM 03.38
   GSM: {
     chars:
@@ -383,9 +484,16 @@ const gsmCoder = {
 
     return undefined;
   },
-} as const;
+};
 
-const encodings = {
+const encodings: {
+  [key: string]: any;
+  ASCII: Encoding;
+  LATIN1: Encoding;
+  UCS2: Encoding;
+  default: string;
+  detect: (value: string) => string | false;
+} = {
   ASCII: {
     // GSM 03.38
     match: function (value) {
@@ -406,6 +514,9 @@ const encodings = {
       return iconv.encode(value, 'latin1');
     },
     decode: function (value) {
+      if (typeof value === 'string') {
+        value = Buffer.from(value, 'latin1');
+      }
       return iconv.decode(value, 'latin1');
     },
   },
@@ -417,20 +528,23 @@ const encodings = {
       return iconv.encode(value, 'utf16-be');
     },
     decode: function (value) {
+      if (typeof value === 'string') {
+        value = iconv.encode(value, 'utf16-be');
+      }
       return iconv.decode(value, 'utf16-be');
     },
   },
   default: 'ASCII' as string,
   detect: function (value) {
     for (const key in encodings) {
-      if (encodings[key].match(value)) {
+      if (encodings[key].match && encodings[key].match(value)) {
         return key;
       }
     }
 
     return false;
   },
-} as const;
+};
 
 const udhCoder = {
   getUdh: function (buffer: Buffer): Array<any> {
@@ -736,6 +850,160 @@ const filters = {
     },
   },
 } as const;
+
+/**
+ * Register a custom encoding
+ *
+ * @param name - The name of the encoding (e.g., 'UTF8', 'CUSTOM')
+ * @param encoding - The encoding implementation
+ *
+ * @example
+ * ```typescript
+ * import smpp from 'smpp';
+ *
+ * // Register a custom UTF-8 encoding
+ * smpp.registerEncoding('UTF8', {
+ *   match: (value) => {
+ *     // Check if value can be encoded as UTF-8
+ *     return Buffer.byteLength(value, 'utf8') === value.length;
+ *   },
+ *   encode: (value) => {
+ *     return Buffer.from(value, 'utf8');
+ *   },
+ *   decode: (value) => {
+ *     return value.toString('utf8');
+ *   }
+ * });
+ *
+ * // Set as default encoding
+ * smpp.encodings.default = 'UTF8';
+ * ```
+ */
+export function registerEncoding(name: string, encoding: Encoding): void {
+  if (!name || typeof name !== 'string') {
+    throw new Error('Encoding name must be a non-empty string');
+  }
+
+  if (!encoding || typeof encoding !== 'object') {
+    throw new Error('Encoding must be an object');
+  }
+
+  if (typeof encoding.match !== 'function') {
+    throw new Error('Encoding must have a match() function');
+  }
+
+  if (typeof encoding.encode !== 'function') {
+    throw new Error('Encoding must have an encode() function');
+  }
+
+  if (typeof encoding.decode !== 'function') {
+    throw new Error('Encoding must have a decode() function');
+  }
+
+  encodings[name] = encoding;
+}
+
+/**
+ * Register a custom GSM coder
+ *
+ * @param name - The name of the GSM coder (e.g., 'GSM_FR', 'GSM_DE')
+ * @param encodingValue - The encoding value (0x00-0xFF) used in UDH headers
+ * @param coderDef - The GSM coder definition
+ *
+ * @example
+ * ```typescript
+ * import smpp from 'smpp';
+ *
+ * // Register a custom GSM French shift table
+ * smpp.registerGsmCoder('GSM_FR', 0x04, {
+ *   chars: '@£$¥èéùìòÇ\nØø\rÅå...', // 128 standard characters
+ *   extChars: '\f^{}[~]|€',          // Extended characters
+ *   escChars: '\nΛ()/<=>¡e',          // Escape characters
+ *   charRegex: /^[...]*$/,            // Validation regex
+ *   charListEnc: {},
+ *   extCharListEnc: {},
+ *   charListDec: {},
+ *   extCharListDec: {}
+ * });
+ * ```
+ */
+export function registerGsmCoder(
+  name: string,
+  encodingValue: number,
+  coderDef: GsmCoderDefinition
+): void {
+  if (!name || typeof name !== 'string') {
+    throw new Error('GSM coder name must be a non-empty string');
+  }
+
+  if (typeof encodingValue !== 'number' || encodingValue < 0 || encodingValue > 255) {
+    throw new Error('Encoding value must be a number between 0 and 255');
+  }
+
+  if (!coderDef || typeof coderDef !== 'object') {
+    throw new Error('GSM coder definition must be an object');
+  }
+
+  if (typeof coderDef.chars !== 'string') {
+    throw new Error('GSM coder must have a chars string');
+  }
+
+  if (!(coderDef.charRegex instanceof RegExp)) {
+    throw new Error('GSM coder must have a charRegex RegExp');
+  }
+
+  // Initialize lookup tables if not provided
+  if (!coderDef.charListEnc) {
+    coderDef.charListEnc = {};
+  }
+  if (!coderDef.extCharListEnc) {
+    coderDef.extCharListEnc = {};
+  }
+  if (!coderDef.charListDec) {
+    coderDef.charListDec = {};
+  }
+  if (!coderDef.extCharListDec) {
+    coderDef.extCharListDec = {};
+  }
+
+  // Add to gsmCoder
+  gsmCoder[name] = coderDef;
+
+  // Update getCoder to handle this encoding value
+  const originalGetCoder = gsmCoder.getCoder;
+  gsmCoder.getCoder = function (encoding: number) {
+    if (encoding === encodingValue) {
+      const coder = gsmCoder[name];
+
+      // Lazy initialization of lookup tables
+      if (Object.keys(coder.charListEnc).length === 0) {
+        for (var i = 0; i < coder.chars.length; i++) {
+          coder.charListEnc[coder.chars[i]] = i;
+          coder.charListDec[i] = coder.chars[i];
+        }
+
+        const extCharsEnc = coder.extCharsEnc || coder.extChars;
+        const escCharsEnc = coder.escCharsEnc || coder.escChars;
+        if (extCharsEnc && escCharsEnc) {
+          for (var i = 0; i < extCharsEnc.length; i++) {
+            coder.extCharListEnc[extCharsEnc[i]] = escCharsEnc[i];
+          }
+        }
+
+        const extCharsDec = coder.extCharsDec || coder.extChars;
+        const escCharsDec = coder.escCharsDec || coder.escChars;
+        if (extCharsDec && escCharsDec) {
+          for (var i = 0; i < escCharsDec.length; i++) {
+            coder.extCharListDec[escCharsDec[i]] = extCharsDec[i];
+          }
+        }
+      }
+
+      return coder;
+    }
+    return originalGetCoder.call(this, encoding);
+  };
+}
 
 export { errors } from './errors';
 export { encodings };
