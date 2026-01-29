@@ -10,9 +10,17 @@
     "Julián Gutiérrez <juliangut@gmail.com>"
   ],
   "engines": {
-    "node": ">=16"
+    "node": ">=22"
   },
   "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "require": "./dist/index.js",
+      "import": "./dist/index.js"
+    }
+  },
   "repository": {
     "type": "git",
     "url": "https://github.com/semyonf/node-smpp.git"
