@@ -5,6 +5,7 @@ import { parse } from 'url';
 import * as defs from './defs';
 import { PDU } from './pdu';
 import { EventEmitter } from 'events';
+import { SessionEventMap, AnyPDU } from './types';
 
 const proxy = require('findhit-proxywrap').proxy;
 
@@ -140,6 +141,88 @@ export class Session extends EventEmitter {
 
   private socket: any;
   public server: any;
+
+  // ========== Typed Event Method Overloads ==========
+
+  // on() overloads
+  on<K extends keyof SessionEventMap & string>(
+    event: K,
+    listener: SessionEventMap[K] extends void ? () => void : (value: SessionEventMap[K]) => void
+  ): this;
+  on(event: string | symbol, listener: (...args: any[]) => void): this;
+  on(event: string | symbol, listener: (...args: any[]) => void): this {
+    return super.on(event, listener);
+  }
+
+  // once() overloads
+  once<K extends keyof SessionEventMap & string>(
+    event: K,
+    listener: SessionEventMap[K] extends void ? () => void : (value: SessionEventMap[K]) => void
+  ): this;
+  once(event: string | symbol, listener: (...args: any[]) => void): this;
+  once(event: string | symbol, listener: (...args: any[]) => void): this {
+    return super.once(event, listener);
+  }
+
+  // off() overloads
+  off<K extends keyof SessionEventMap & string>(
+    event: K,
+    listener: SessionEventMap[K] extends void ? () => void : (value: SessionEventMap[K]) => void
+  ): this;
+  off(event: string | symbol, listener: (...args: any[]) => void): this;
+  off(event: string | symbol, listener: (...args: any[]) => void): this {
+    return super.off(event, listener);
+  }
+
+  // addListener() overloads
+  addListener<K extends keyof SessionEventMap & string>(
+    event: K,
+    listener: SessionEventMap[K] extends void ? () => void : (value: SessionEventMap[K]) => void
+  ): this;
+  addListener(event: string | symbol, listener: (...args: any[]) => void): this;
+  addListener(event: string | symbol, listener: (...args: any[]) => void): this {
+    return super.addListener(event, listener);
+  }
+
+  // removeListener() overloads
+  removeListener<K extends keyof SessionEventMap & string>(
+    event: K,
+    listener: SessionEventMap[K] extends void ? () => void : (value: SessionEventMap[K]) => void
+  ): this;
+  removeListener(event: string | symbol, listener: (...args: any[]) => void): this;
+  removeListener(event: string | symbol, listener: (...args: any[]) => void): this {
+    return super.removeListener(event, listener);
+  }
+
+  // prependListener() overloads
+  prependListener<K extends keyof SessionEventMap & string>(
+    event: K,
+    listener: SessionEventMap[K] extends void ? () => void : (value: SessionEventMap[K]) => void
+  ): this;
+  prependListener(event: string | symbol, listener: (...args: any[]) => void): this;
+  prependListener(event: string | symbol, listener: (...args: any[]) => void): this {
+    return super.prependListener(event, listener);
+  }
+
+  // prependOnceListener() overloads
+  prependOnceListener<K extends keyof SessionEventMap & string>(
+    event: K,
+    listener: SessionEventMap[K] extends void ? () => void : (value: SessionEventMap[K]) => void
+  ): this;
+  prependOnceListener(event: string | symbol, listener: (...args: any[]) => void): this;
+  prependOnceListener(event: string | symbol, listener: (...args: any[]) => void): this {
+    return super.prependOnceListener(event, listener);
+  }
+
+  // emit() overloads
+  emit<K extends keyof SessionEventMap & string>(
+    event: K,
+    ...args: SessionEventMap[K] extends void ? [] : [SessionEventMap[K]]
+  ): boolean;
+  emit(event: string | symbol, ...args: any[]): boolean;
+  emit(event: string | symbol, ...args: any[]): boolean {
+    return super.emit(event, ...args);
+  }
 
   rootSocket() {
     if (this.socket._parent) return this.socket._parent;
@@ -814,3 +897,6 @@ export const ENCODING = defs.consts.ENCODING;
 export const NETWORK = defs.consts.NETWORK;
 export const BROADCAST_AREA_FORMAT = defs.consts.BROADCAST_AREA_FORMAT;
 export const BROADCAST_FREQUENCY_INTERVAL = defs.consts.BROADCAST_FREQUENCY_INTERVAL;
+
+// Re-export PDU types
+export * from './types';
