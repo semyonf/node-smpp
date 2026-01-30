@@ -350,7 +350,12 @@ export class Session extends EventEmitter {
     this._busy = false;
   }
 
-  send(pdu, responseCallback, sendCallback, failureCallback) {
+  send(
+    pdu: PDU,
+    responseCallback?: PDUResponseCallback,
+    sendCallback?: PDUSendCallback,
+    failureCallback?: PDUFailureCallback
+  ): boolean {
     if (!this.socket.writable) {
       const errorObject = {
         error: 'Socket is not writable',
@@ -425,7 +430,7 @@ export class Session extends EventEmitter {
     this._extractPDUs();
   }
 
-  close(callback) {
+  close(callback?: () => void): void {
     if (callback) {
       if (this.closed) {
         callback();
@@ -436,7 +441,7 @@ export class Session extends EventEmitter {
     this.socket.end();
   }
 
-  destroy(callback) {
+  destroy(callback?: () => void): void {
     if (callback) {
       if (this.closed) {
         callback();
