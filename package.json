@@ -1,6 +1,6 @@
 {
   "name": "@semyonf/smpp",
-  "version": "1.3.0",
+  "version": "1.4.0",
   "description": "SMPP client and server implementation in node.js",
   "homepage": "https://github.com/semyonf/node-smpp",
   "bugs": "https://github.com/semyonf/node-smpp/issues",
