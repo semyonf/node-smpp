@@ -28,7 +28,7 @@ export type ShortMessage = Buffer | { message?: string; udh?: Buffer | Buffer[] 
  * Destination address for submit_multi
  */
 export interface DestAddress {
-  dest_flag: number;
+  dest_flag?: number;
   dest_addr_ton?: number;
   dest_addr_npi?: number;
   destination_addr?: string;
