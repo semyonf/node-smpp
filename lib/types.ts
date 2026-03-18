@@ -18,15 +18,17 @@ export interface BasePDU {
 // ========== Helper Types ==========
 
 /**
- * Short message content - can be raw buffer, decoded message object with optional UDH, or string
+ * Short message content - can be raw buffer, decoded message object with optional UDH, or string.
+ * When encoding (input), udh is a single Buffer containing the full UDH.
+ * When decoding (output), udh is an array of Buffers (one per UDH information element).
  */
-export type ShortMessage = Buffer | { message?: string; udh?: Buffer } | string;
+export type ShortMessage = Buffer | { message?: string; udh?: Buffer | Buffer[] } | string;
 
 /**
  * Destination address for submit_multi
  */
 export interface DestAddress {
-  dest_flag: number;
+  dest_flag?: number;
   dest_addr_ton?: number;
   dest_addr_npi?: number;
   destination_addr?: string;
