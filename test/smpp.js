@@ -261,6 +261,71 @@ describe('Session', function() {
 		});
 	});
 
+	describe('#tls', function() {
+		it('should be false on an incoming session of a plain server', function(done) {
+			var client;
+			server.once('session', function(session) {
+				assert.strictEqual(session.tls, false);
+				client.close();
+				done();
+			});
+			client = smpp.connect({ port: port });
+			client.on('error', done);
+		});
+
+		it('should be true on an incoming session of a secure server', function(done) {
+			var client;
+			secure.server.once('session', function(session) {
+				assert.strictEqual(session.tls, true);
+				client.close();
+				done();
+			});
+			client = smpp.connect({ port: secure.port, tls: true, rejectUnauthorized: false });
+			client.on('error', done);
+		});
+
+		it('should be true on a client session connected through an ssmpp url', function(done) {
+			var session = smpp.connect('ssmpp://localhost:' + secure.port, function() {
+				assert.strictEqual(session.tls, true);
+				session.close();
+				done();
+			});
+			session.on('error', done);
+		});
+
+		it('should be false on a client session connected through an smpp url', function(done) {
+			var session = smpp.connect('smpp://localhost:' + port, function() {
+				assert.strictEqual(session.tls, false);
+				session.close();
+				done();
+			});
+			session.on('error', done);
+		});
+
+		it('should be true on a client session connected with the tls option', function(done) {
+			var session = smpp.connect({
+				host: 'localhost',
+				port: secure.port,
+				tls: true
+			}, function() {
+				assert.strictEqual(session.tls, true);
+				session.close();
+				done();
+			});
+			session.on('error', done);
+		});
+
+		it('should be false on a session instantiated directly without the tls option', function(done) {
+			var session = new smpp.Session({ host: 'localhost', port: port });
+			session.on('error', done);
+			session.on('connect', function() {
+				assert.strictEqual(session.tls, false);
+				session.close();
+				done();
+			});
+		});
+	});
+
 });
 
 describe('Client/Server simulations', function() {

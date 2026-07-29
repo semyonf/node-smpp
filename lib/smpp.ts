@@ -131,6 +131,8 @@ export class Session extends EventEmitter {
   public remoteAddress: string | null = null;
   public remotePort: number | null = null;
   public proxyProtocolProxy: any = null;
+  /** Whether this session runs over TLS */
+  public readonly tls: boolean;
   private _busy: boolean = false;
   private _callbacks = {};
   private _interval: NodeJS.Timeout | 0 = 0;
@@ -231,6 +233,8 @@ export class Session extends EventEmitter {
 
   constructor(private options: SessionOptions = {}) {
     super();
+
+    this.tls = options.tls === true;
 
     const self = this;
     let connectTimeout;
