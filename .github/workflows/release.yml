@@ -31,9 +31,9 @@ jobs:
       - run: npm test
 
       - name: Create Release Pull Request or Publish
-        uses: changesets/action@v2
+        uses: changesets/action@v1
         with:
-          github-token: ${{ secrets.GITHUB_TOKEN }}
-          version-script: npm run version
-          publish-script: npm run release
-          push-git-tags: true
+          version: npm run version
+          publish: npm run release
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
