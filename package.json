@@ -37,9 +37,17 @@
     "lint": "eslint . --ext .ts",
     "lint:fix": "eslint . --ext .ts --fix",
     "format": "prettier --write \"**/*.{ts,js,json,md}\"",
-    "format:check": "prettier --check \"**/*.{ts,js,json,md}\""
+    "format:check": "prettier --check \"**/*.{ts,js,json,md}\"",
+    "prepublishOnly": "npm run build",
+    "changeset": "changeset",
+    "version": "changeset version",
+    "release": "changeset publish"
+  },
+  "publishConfig": {
+    "access": "public"
   },
   "devDependencies": {
+    "@changesets/cli": "^2.31.1",
     "@stryker-mutator/core": "4.6.0",
     "@stryker-mutator/mocha-runner": "4.6.0",
     "@types/iconv-lite": "0.0.1",
