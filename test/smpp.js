@@ -168,11 +168,15 @@ describe('Session', function() {
 		});
 
 		it('should successfully establish a secure connection', function(done) {
-			smpp.connect({
+			var session = smpp.connect({
 				port: secure.port,
 				tls: true,
 				rejectUnauthorized: false
 			}, function() {
+				// The server may not have registered its side of the session yet, so the
+				// afterEach hook cannot close it for us — leaving the socket open would
+				// stall secure.server.close().
+				session.close();
 				done();
 			});
 		});
