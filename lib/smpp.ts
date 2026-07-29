@@ -231,6 +231,23 @@ export class Session extends EventEmitter {
     return this.socket;
   }
 
+  /**
+   * Certificate presented by the TLS peer, or undefined for a non-TLS session.
+   * Available once the handshake has completed (client mode: after the
+   * 'secureConnect' event).
+   *
+   * Note that this reads the certificate off this.socket and not off rootSocket():
+   * the certificate lives on the TLSSocket, while rootSocket() returns its parent,
+   * which on a proxy-protocol session is the underlying raw socket.
+   */
+  getPeerCertificate(
+    detailed = false
+  ): tls.DetailedPeerCertificate | tls.PeerCertificate | undefined {
+    const socket = this.socket;
+    if (typeof socket?.getPeerCertificate !== 'function') return undefined;
+    return socket.getPeerCertificate(detailed);
+  }
+
   constructor(private options: SessionOptions = {}) {
     super();
 

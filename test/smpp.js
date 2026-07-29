@@ -1,4 +1,5 @@
 var assert = require('assert'),
+    crypto = require('crypto'),
     fs = require('fs'),
     smpp = require('..');
 
@@ -327,6 +328,93 @@ describe('Session', function() {
 				session.close();
 				done();
 			});
+		});
+	});
+
+	describe('#getPeerCertificate()', function() {
+		var fixtureNotAfter = new crypto.X509Certificate(
+			fs.readFileSync(__dirname + '/fixtures/server.crt')
+		).validTo;
+
+		it('should return the certificate presented by the server on a secure client session', function(done) {
+			var session = smpp.connect({
+				port: secure.port,
+				tls: true,
+				rejectUnauthorized: false
+			}, function() {
+				var cert = session.getPeerCertificate();
+				assert.ok(cert, 'No certificate returned');
+				assert.strictEqual(cert.valid_to, fixtureNotAfter);
+				assert.strictEqual(cert.issuerCertificate, undefined, 'Should not be detailed by default');
+				session.close();
+				done();
+			});
+			session.on('error', done);
+		});
+
+		it('should return undefined on a plain client session', function(done) {
+			var session = smpp.connect({ port: port }, function() {
+				assert.strictEqual(session.getPeerCertificate(), undefined);
+				session.close();
+				done();
+			});
+			session.on('error', done);
+		});
+
+		it('should return an empty object, not undefined, on a secure server session which did not request a client certificate', function(done) {
+			var client;
+			secure.server.once('session', function(session) {
+				// An empty object means "TLS is up, but the peer sent no certificate", which is a
+				// different situation than "this session is not TLS at all" (undefined).
+				assert.notStrictEqual(session.getPeerCertificate(), undefined);
+				assert.deepStrictEqual(session.getPeerCertificate(), {});
+				client.close();
+				done();
+			});
+			client = smpp.connect({ port: secure.port, tls: true, rejectUnauthorized: false });
+			client.on('error', done);
+		});
+
+		it('should return a detailed certificate when asked for one', function(done) {
+			var session = smpp.connect({
+				port: secure.port,
+				tls: true,
+				rejectUnauthorized: false
+			}, function() {
+				var cert = session.getPeerCertificate(true);
+				assert.ok(cert.issuerCertificate, 'issuerCertificate is missing from the detailed certificate');
+				session.close();
+				done();
+			});
+			session.on('error', done);
+		});
+
+		it('should not throw when called before the handshake has completed', function(done) {
+			var session = smpp.connect({ port: secure.port, tls: true, rejectUnauthorized: false });
+			assert.doesNotThrow(function() {
+				session.getPeerCertificate();
+			});
+			session.on('error', done);
+			session.on('secureConnect', function() {
+				session.close();
+				done();
+			});
+		});
+
+		it('should not throw when called after the session has been closed', function(done) {
+			var session = smpp.connect({
+				port: secure.port,
+				tls: true,
+				rejectUnauthorized: false
+			}, function() {
+				session.close(function() {
+					assert.doesNotThrow(function() {
+						session.getPeerCertificate();
+					});
+					done();
+				});
+			});
+			session.on('error', done);
 		});
 	});
 

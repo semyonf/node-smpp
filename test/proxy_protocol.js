@@ -181,6 +181,21 @@ describe('ProxyProtocol', function() {
 		});
 	});
 
+	it('should expose the TLS peer certificate on a proxied secure session', function (done) {
+		// On a proxied TLS session the session socket is a TLSSocket wrapping the raw proxied
+		// socket, so rootSocket() returns the parent, which has no getPeerCertificate() at all.
+		// Reading the certificate from there would silently report "not a TLS session".
+		var socket = tls.connect( {port: securePort, rejectUnauthorized: false} );
+		secureServer.options.autoPrependBuffer = Buffer.from("PROXY TCP4 1.1.4.4 2.2.3.3 5566 7788\r\n");
+		secureServer.once("session", function (session) {
+			assert.notStrictEqual(session.getPeerCertificate(), undefined, "Certificate read from the wrong socket");
+			assert.deepStrictEqual(session.getPeerCertificate(), {});
+			socket.destroy();
+			done();
+		});
+		socket.on("error", function(e) {});
+	});
+
 	it('should fail with a PROXY header too long (NON-TLS)', function (done) {
 		var socket = net.connect( {port: port} );
 		server.on("error", function(e) {

@@ -244,6 +244,22 @@ Can be used to postpone incoming pdu events untill calling `session.resume()`.
 #### session.resume()
 Resumes the session after a call to `pause()`.
 
+#### session.getPeerCertificate([detailed])
+Returns the certificate presented by the TLS peer, as returned by node's
+[`tls.TLSSocket.getPeerCertificate()`](https://nodejs.org/api/tls.html#tlssocketgetpeercertificatedetailed).
+Pass `true` to get the certificate chain as well.
+
+On a client session the certificate is available once the `secureConnect` event has been emitted.
+The result is `undefined` for a session that is not running over TLS, and an empty object for a TLS
+session whose peer sent no certificate, which is the usual case for a server session created without
+the `requestCert` option.
+
+``` javascript
+var session = smpp.connect('ssmpp://smpp.example.org:3550', function() {
+	console.log('provider certificate expires on', session.getPeerCertificate().valid_to);
+});
+```
+
 #### Shortcut methods
 For all smpp operations you can call methods with the same name as the operation
 name, which is equivalent to createing a pdu instance and then sending it over
