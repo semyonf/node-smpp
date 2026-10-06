@@ -519,4 +519,6 @@ export type SessionEventMap = {
   response_timeout: AnyPDU;
   /** The request pdu that was still waiting for its response when the session closed */
   response_aborted: AnyPDU;
+  /** An auto-sent enquire_link got no enquire_link_resp in time; carries that enquire_link */
+  enquire_link_timeout: EnquireLinkPDU;
 };
