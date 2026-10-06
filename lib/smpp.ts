@@ -360,8 +360,8 @@ export class Session extends EventEmitter {
         self.debug('server.disconnected', 'disconnected from server');
         self.emitMetric('server.disconnected', 1);
       }
-      self.emit('close');
       self._stopEnquireLinkInterval();
+      self.emit('close');
     });
     this.socket.on('error', function (e) {
       clearTimeout(connectTimeout);
@@ -589,14 +589,18 @@ export class Session extends EventEmitter {
   }
 
   private _stopEnquireLinkInterval(): void {
-    if (this._interval) {
-      clearInterval(this._interval);
-      this._interval = 0;
-    }
+    this._clearEnquireLinkSchedule();
     for (const timer of this._enquireLinkTimers) {
       clearTimeout(timer);
     }
     this._enquireLinkTimers.clear();
+  }
+
+  private _clearEnquireLinkSchedule(): void {
+    if (this._interval) {
+      clearInterval(this._interval);
+      this._interval = 0;
+    }
   }
 
   private _sendEnquireLink(timeout: number): void {
@@ -609,26 +613,27 @@ export class Session extends EventEmitter {
     const timer = setTimeout(() => {
       this._enquireLinkTimers.delete(timer);
       delete this._callbacks[pdu.sequence_number];
+      if (this.socket.destroyed) {
+        // destroy() was called in the same timers phase, before 'close' cleared this timer.
+        return;
+      }
       this.debug('enquire_link.timeout', 'no enquire_link_resp within ' + timeout + 'ms', {
         sequence_number: pdu.sequence_number,
         timeout: timeout,
       });
       this.emitMetric('enquire_link.timeout', 1, { pdu: pdu, timeout: timeout });
       this.emit('enquire_link_timeout', pdu as unknown as EnquireLinkPDU);
-      if (this.options.close_on_enquire_link_timeout !== false && !this.socket.destroyed) {
-        this._stopEnquireLinkInterval();
+      if (this.options.close_on_enquire_link_timeout !== false) {
         this.destroy();
       }
     }, timeout);
-    const sent = this.send(pdu, () => {
+    const settle = (): void => {
       clearTimeout(timer);
       this._enquireLinkTimers.delete(timer);
-    });
-    if (sent) {
-      this._enquireLinkTimers.add(timer);
-    } else {
-      clearTimeout(timer);
-    }
+    };
+    this._enquireLinkTimers.add(timer);
+    // A failed write was never seen by the peer, so there is no response to wait for.
+    this.send(pdu, settle, undefined, settle);
   }
 
   pause() {
@@ -648,8 +653,10 @@ export class Session extends EventEmitter {
         this.socket.once('close', callback);
       }
     }
-    // The socket stops being writable, so further enquire_link could only fail.
-    this._stopEnquireLinkInterval();
+    // The socket stops being writable, so further enquire_link could only fail. The ones already
+    // sent stay awaited: a peer that stopped answering will not close its side either, and their
+    // timeout is what destroys the half-open session then.
+    this._clearEnquireLinkSchedule();
     this.socket.end();
   }
 
@@ -661,6 +668,7 @@ export class Session extends EventEmitter {
         this.socket.once('close', callback);
       }
     }
+    this._stopEnquireLinkInterval();
     this.socket.destroy();
   }
 }

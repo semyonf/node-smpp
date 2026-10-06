@@ -15,8 +15,11 @@ until TCP noticed, which can take many minutes. New options, accepted by both `s
   many milliseconds for its response. If none arrives, an `enquire_link_timeout` event is emitted
   with the unanswered `enquire_link`, and the session is destroyed unless
   `close_on_enquire_link_timeout` is `false`.
-- `auto_enquire_link_period` now also works on server sessions, and stops when `session.close()` is
-  called instead of firing at a socket that can no longer be written to.
+- `auto_enquire_link_period` now also works on server sessions, and stops when `session.close()` or
+  `session.destroy()` is called instead of firing at a socket that can no longer be written to.
+  After `close()` the responses to the `enquire_link` already sent are still awaited, so a peer that
+  stopped answering and never closes its side is dropped by the timeout instead of hanging
+  half-open.
 
 All of them default to the previous behaviour. At runtime they are controlled with
 `session.startEnquireLink(period, [timeout])`, `session.stopEnquireLink()` and the

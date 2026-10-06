@@ -182,7 +182,8 @@ Any response carrying the sequence number of the `enquire_link` counts as an ans
 answered, so the link is alive.
 
 Responses are only read while the session is not paused, so keep `session.pause()` shorter than
-`enquire_link_timeout`, or the link is considered dead.
+`enquire_link_timeout`, or the link is considered dead. A paused session doesn't answer incoming
+`enquire_link` automatically either, so the peer's own timeout applies as well.
 
 ### Proxy protocol
 
@@ -292,7 +293,9 @@ established.
 
 #### session.stopEnquireLink()
 Stops sending `enquire_link` and stops waiting for responses to the ones already sent.
-`session.close()` also stops sending them, since the connection can no longer be written to.
+`session.close()` and `session.destroy()` also stop sending them. After `session.close()` the
+responses to the ones already sent are still awaited, so a peer that never closes its side of the
+connection is dropped by `enquire_link_timeout`.
 
 #### session.autoEnquireLinkResponse
 Whether incoming `enquire_link` are answered automatically. Initialized from the

@@ -810,11 +810,13 @@ describe('enquire_link', function() {
 				close_on_enquire_link_timeout: false
 			});
 			session.on('close', function() {
-				if (timeouts < 2) done(new Error('session closed on enquire_link timeout'));
+				if (timeouts < 3) done(new Error('session closed on enquire_link timeout'));
 			});
 			session.on('enquire_link_timeout', function(pdu) {
 				assert.equal(session._callbacks[pdu.sequence_number], undefined, 'the timed out callback was kept');
-				if (++timeouts === 2) {
+				if (++timeouts === 3) {
+					// At most the enquire_link sent after the one that just timed out is still awaited.
+					assert.ok(session._enquireLinkTimers.size <= 1, 'fired timers were kept: ' + session._enquireLinkTimers.size);
 					session.destroy(done);
 				}
 			});
@@ -858,12 +860,96 @@ describe('enquire_link', function() {
 		});
 
 		it('should start a schedule requested before the connection is established', function(done) {
+			var connected = false;
 			var session = smpp.connect({ port: port }, function() {
+				connected = true;
 				serverSessions[0].on('enquire_link', function() {
 					session.destroy(done);
 				});
 			});
-			session.startEnquireLink(10);
+			session.on('debug', function(type) {
+				if (type === 'pdu.command.out') {
+					assert.ok(connected, 'enquire_link was sent before the connection was established');
+				}
+			});
+			session.startEnquireLink(1);
+			assert.equal(session._interval, 0, 'the schedule started before the connection was established');
+		});
+
+		it('should ignore a negative timeout given to startEnquireLink()', function(done) {
+			var session = smpp.connect({ port: port }, function() {
+				serverSessions[0].on('enquire_link', function(pdu) {
+					serverSessions[0].send(pdu.response());
+				});
+				session.startEnquireLink(10, -5);
+			});
+			session.on('enquire_link_timeout', function() {
+				done(new Error('enquire_link timed out'));
+			});
+			setTimeout(function() {
+				session.destroy(done);
+			}, 100);
+		});
+
+		it('should not wait for a response to an enquire_link that could not be written', function(done) {
+			var session = smpp.connect({ port: port }, function() {
+				session.socket.write = function(buffer, callback) {
+					process.nextTick(callback, new Error('write failed'));
+					return false;
+				};
+				session.startEnquireLink(10, 30);
+			});
+			session.on('enquire_link_timeout', function() {
+				done(new Error('enquire_link_timeout emitted for an enquire_link that was never written'));
+			});
+			setTimeout(function() {
+				assert.equal(session._enquireLinkTimers.size, 0);
+				session.destroy(done);
+			}, 120);
+		});
+
+		it('should keep waiting for the responses after close() and drop a half-open peer', function(done) {
+			// A peer that stopped answering doesn't close its side either, so close() alone would hang.
+			var net = require('net');
+			var sockets = [];
+			var deadPeer = net.createServer({ allowHalfOpen: true }, function(socket) {
+				sockets.push(socket);
+			});
+			deadPeer.listen(0, function() {
+				var timedOut = false;
+				var session = smpp.connect({
+					port: deadPeer.address().port,
+					auto_enquire_link_period: 10,
+					enquire_link_timeout: 50
+				});
+				session.once('send', function() {
+					session.close();
+				});
+				session.on('enquire_link_timeout', function() {
+					timedOut = true;
+				});
+				session.on('close', function() {
+					assert.ok(timedOut, 'the session was not dropped by the enquire_link timeout');
+					sockets.forEach(function(socket) {
+						socket.destroy();
+					});
+					deadPeer.close(done);
+				});
+			});
+		});
+
+		it('should stop the keepalive synchronously on destroy()', function(done) {
+			var session = smpp.connect({ port: port, auto_enquire_link_period: 10, enquire_link_timeout: 1000 }, function() {
+				session.once('send', function() {
+					session.destroy();
+					assert.equal(session._interval, 0);
+					assert.equal(session._enquireLinkTimers.size, 0);
+					done();
+				});
+			});
+			session.on('enquire_link_timeout', function() {
+				done(new Error('enquire_link_timeout emitted after destroy()'));
+			});
 		});
 
 		it('should not start sending enquire_link when closed from the connect listener', function(done) {
