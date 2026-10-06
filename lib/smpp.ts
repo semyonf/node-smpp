@@ -45,6 +45,11 @@ export interface ConnectOptions {
   debugListener?: DebugListener;
   /** Auto-send enquire_link at this interval (milliseconds) */
   auto_enquire_link_period?: number;
+  /**
+   * Give up waiting for the response to a request after this many milliseconds
+   * (default: unset, wait forever). See README, "Response timeout".
+   */
+  response_timeout?: number;
   /** Alternative: connection URL (smpp://host:port or ssmpp://host:port for TLS) */
   url?: string;
   /** Additional options passed to net.connect or tls.connect */
@@ -75,6 +80,8 @@ export interface ServerOptions {
   debug?: boolean;
   /** Custom debug listener function */
   debugListener?: DebugListener;
+  /** response_timeout for every session accepted by this server, see ConnectOptions */
+  response_timeout?: number;
   /** Auto-prepend buffer for testing (internal use) */
   autoPrependBuffer?: Buffer;
   /** Additional options passed to net.Server or tls.Server */
@@ -113,6 +120,40 @@ export interface MetricsPayload {
   session: Session;
 }
 
+/**
+ * A request that was sent with a responseCallback and is waiting for its response.
+ */
+interface PendingRequest {
+  /** The sequence_number the entry is stored under, in case the caller mutates pdu */
+  sequenceNumber: number;
+  pdu: PDU;
+  responseCallback: PDUResponseCallback;
+  failureCallback?: PDUFailureCallback;
+  /** Pending response_timeout timer, null when response_timeout is not enabled */
+  timer: NodeJS.Timeout | null;
+  /** Set once a response, a timeout or a failure has been reported for this request */
+  settled: boolean;
+}
+
+/** setTimeout() silently turns anything above this into 1ms */
+const MAX_TIMEOUT = 0x7fffffff;
+
+/**
+ * Validates the response_timeout option, returning 0 when it is disabled.
+ */
+function normalizeResponseTimeout(value: unknown): number {
+  if (value === undefined || value === null || value === 0) return 0;
+  if (typeof value !== 'number' || !Number.isFinite(value) || value < 0 || value > MAX_TIMEOUT) {
+    throw new RangeError(
+      'The response_timeout option must be a number of milliseconds between 0 (disabled) and ' +
+        MAX_TIMEOUT +
+        ', got ' +
+        String(value)
+    );
+  }
+  return value;
+}
+
 type PDUMethods = {
   [CommandName in keyof typeof defs.commands]: (
     params?: any,
@@ -134,7 +175,9 @@ export class Session extends EventEmitter {
   /** Whether this session runs over TLS */
   public readonly tls: boolean;
   private _busy: boolean = false;
-  private _callbacks = {};
+  private _callbacks: Record<number, PendingRequest> = {};
+  private _responseTimeout: number;
+  private _lastSocketError: Error | null = null;
   private _interval: NodeJS.Timeout | 0 = 0;
   private _command_length: number | null = null;
   private _mode: string | null = null;
@@ -252,6 +295,7 @@ export class Session extends EventEmitter {
     super();
 
     this.tls = options.tls === true;
+    this._responseTimeout = normalizeResponseTimeout(options.response_timeout);
 
     const self = this;
     let connectTimeout;
@@ -336,6 +380,9 @@ export class Session extends EventEmitter {
         self.debug('server.disconnected', 'disconnected from server');
         self.emitMetric('server.disconnected', 1);
       }
+      // Settled before 'close' is emitted, so that a listener which reconnects
+      // never sees requests of the old connection as pending.
+      self._abortPending();
       self.emit('close');
       if (self._interval) {
         clearInterval(self._interval);
@@ -350,6 +397,8 @@ export class Session extends EventEmitter {
       }
       self.debug('socket.error', e.message, e);
       self.emitMetric('socket.error', 1, { error: e });
+      // 'close' follows; the error becomes the cause of the requests aborted there.
+      self._lastSocketError = e;
       self.emit('error', e); // Emitted errors will kill the program if they're not captured.
     });
   }
@@ -414,8 +463,139 @@ export class Session extends EventEmitter {
     this.sequence = 0;
     this.paused = false;
     this._busy = false;
-    this._callbacks = {};
+    this._resetPending();
     this.socket.connect(this.options);
+  }
+
+  // ========== Pending requests ==========
+  //
+  // Every request sent with a responseCallback is tracked in _callbacks under its
+  // sequence_number until exactly one of these happens to it: its response arrives
+  // (_resolvePending), it times out (_timeoutPending), the session closes
+  // (_abortPending), or writing it fails (send()). The settled flag guarantees that
+  // only the first of them reaches the caller, and timers only ever act on their own
+  // entry, never on whatever is stored under the same sequence_number later.
+
+  private _addPending(
+    pdu: PDU,
+    responseCallback: PDUResponseCallback,
+    failureCallback?: PDUFailureCallback
+  ): PendingRequest {
+    const sequenceNumber = pdu.sequence_number;
+    const displaced = this._callbacks[sequenceNumber];
+    if (displaced) {
+      // The sequence number was reused while still pending (caller-provided sequence
+      // numbers when proxying, or a wraparound). A response can no longer be told
+      // apart, so the old request is dropped as it always was, but its timer must not
+      // live on to time out the new request.
+      this._clearPendingTimer(displaced);
+    }
+    const entry: PendingRequest = {
+      sequenceNumber,
+      pdu,
+      responseCallback,
+      failureCallback,
+      timer: null,
+      settled: false,
+    };
+    this._callbacks[sequenceNumber] = entry;
+    if (this._responseTimeout > 0) {
+      entry.timer = setTimeout(() => this._timeoutPending(entry), this._responseTimeout);
+      // The socket keeps the event loop alive while a response can still arrive, and
+      // the timers are cleared when it closes, so a timer has no reason to do it too.
+      entry.timer.unref();
+    }
+    return entry;
+  }
+
+  /**
+   * Stops tracking the entry. Returns false if it was already settled.
+   */
+  private _settlePending(entry: PendingRequest): boolean {
+    this._clearPendingTimer(entry);
+    if (this._callbacks[entry.sequenceNumber] === entry) {
+      delete this._callbacks[entry.sequenceNumber];
+    }
+    if (entry.settled) return false;
+    entry.settled = true;
+    return true;
+  }
+
+  private _clearPendingTimer(entry: PendingRequest): void {
+    if (entry.timer) {
+      clearTimeout(entry.timer);
+      entry.timer = null;
+    }
+  }
+
+  private _resolvePending(response: PDU): void {
+    const entry = this._callbacks[response.sequence_number];
+    if (entry && this._settlePending(entry)) {
+      entry.responseCallback(response);
+    }
+  }
+
+  private _timeoutPending(entry: PendingRequest): void {
+    entry.timer = null;
+    if (this._callbacks[entry.sequenceNumber] !== entry || !this._settlePending(entry)) return;
+    const pdu = entry.pdu;
+    const error = new Error(
+      'No response to ' +
+        pdu.command +
+        ' (sequence_number ' +
+        entry.sequenceNumber +
+        ') within ' +
+        this._responseTimeout +
+        'ms'
+    );
+    error['code'] = 'ERESPONSETIMEOUT';
+    error['timeout'] = this._responseTimeout;
+    this.debug('pdu.command.timeout', pdu.command, pdu);
+    this.emitMetric('pdu.command.timeout', 1, pdu);
+    this.emit('response_timeout', pdu);
+    if (entry.failureCallback) {
+      entry.failureCallback(pdu, error);
+    }
+  }
+
+  /**
+   * Fails the requests that are waiting for a response on a connection that is gone.
+   * Only requests with a response_timeout are failed: the timeout is what opts a
+   * session in to having unanswered requests reported, and failing them here merely
+   * reports them sooner. Without it, pending requests are left alone as they always
+   * were.
+   */
+  private _abortPending(): void {
+    const cause = this._lastSocketError;
+    // A failureCallback may well reconnect, which replaces _callbacks.
+    for (const entry of Object.values(this._callbacks)) {
+      if (!entry.timer || !this._settlePending(entry)) continue;
+      const pdu = entry.pdu;
+      const error = new Error(
+        'Session closed before a response to ' +
+          pdu.command +
+          ' (sequence_number ' +
+          entry.sequenceNumber +
+          ') was received'
+      );
+      error['code'] = 'ESESSIONCLOSED';
+      if (cause) error['cause'] = cause;
+      this.debug('pdu.command.aborted', pdu.command, pdu);
+      this.emitMetric('pdu.command.aborted', 1, pdu);
+      this.emit('response_aborted', pdu);
+      if (entry.failureCallback) {
+        entry.failureCallback(pdu, error);
+      }
+    }
+  }
+
+  /**
+   * Forgets every pending request, before reconnecting.
+   */
+  private _resetPending(): void {
+    this._abortPending(); // leaves only requests without a timer behind
+    this._callbacks = {};
+    this._lastSocketError = null;
   }
 
   private _extractPDUs() {
@@ -446,9 +626,8 @@ export class Session extends EventEmitter {
       this._command_length = null;
       this.emit('pdu', pdu);
       this.emit(pdu.command, pdu);
-      if (pdu.isResponse() && this._callbacks[pdu.sequence_number]) {
-        this._callbacks[pdu.sequence_number](pdu);
-        delete this._callbacks[pdu.sequence_number];
+      if (pdu.isResponse()) {
+        this._resolvePending(pdu);
       }
     }
     this._busy = false;
@@ -473,6 +652,7 @@ export class Session extends EventEmitter {
       }
       return false;
     }
+    let pending: PendingRequest | null = null;
     if (!pdu.isResponse()) {
       // when server/session pair is used to proxy smpp
       // traffic, the sequence_number will be provided by
@@ -484,7 +664,7 @@ export class Session extends EventEmitter {
         pdu.sequence_number = ++this.sequence;
       }
       if (responseCallback) {
-        this._callbacks[pdu.sequence_number] = responseCallback;
+        pending = this._addPending(pdu, responseCallback, failureCallback);
       }
     } else if (responseCallback && !sendCallback) {
       sendCallback = responseCallback;
@@ -505,8 +685,8 @@ export class Session extends EventEmitter {
             errorType: 'socket_write_error',
             pdu: pdu,
           });
-          if (!pdu.isResponse() && this._callbacks[pdu.sequence_number]) {
-            delete this._callbacks[pdu.sequence_number];
+          if (pending && !this._settlePending(pending)) {
+            return; // already reported as timed out or aborted
           }
           if (failureCallback) {
             pdu.command_status = defs.errors.ESME_RSUBMITFAIL;
@@ -614,6 +794,9 @@ function ServerConstructor(this: any, options: ServerOptions | SessionListener, 
     options = options || {};
   }
 
+  // Validated here, as the sessions are only created once clients connect.
+  normalizeResponseTimeout((options as ServerOptions).response_timeout);
+
   this.isProxiedServer = (options as ServerOptions).isProxiedServer == true;
 
   if (listener) {
@@ -641,6 +824,7 @@ function ServerConstructor(this: any, options: ServerOptions | SessionListener, 
       tls: self.options.tls,
       debug: self.options.debug,
       debugListener: self.options.debugListener || undefined,
+      response_timeout: self.options.response_timeout,
     });
     session.server = self;
     if (socket.savedEmit) {
