@@ -515,4 +515,8 @@ export type SessionEventMap = {
   error: Error;
   pdu: AnyPDU;
   send: AnyPDU;
+  /** The request pdu whose response did not arrive within response_timeout */
+  response_timeout: AnyPDU;
+  /** The request pdu that was still waiting for its response when the session closed */
+  response_aborted: AnyPDU;
 };
