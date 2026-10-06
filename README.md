@@ -146,6 +146,59 @@ By default the socket will be dropped after 30000 ms if it doesn't connect.
 A `connectTimeout` option can be sent when making connections with the server in order
 to change this setting.
 
+### Response timeout
+
+By default a request waits for its response for as long as the session stays open: if the
+response never comes, its `responseCallback` is simply never called. Pass a `response_timeout`
+(in milliseconds) to `smpp.connect()`, or to `smpp.createServer()` for the sessions it accepts,
+to stop waiting after that long. It is disabled when unset or `0`; anything other than a number
+between `0` and `2147483647` throws a `RangeError`.
+
+``` javascript
+var session = smpp.connect({ url: 'smpp://example.com:2775', response_timeout: 30000 });
+
+session.submit_sm({
+	destination_addr: 'DESTINATION NUMBER',
+	short_message: 'Hello!'
+}, function(pdu) {
+	// The response arrived in time.
+}, null, function(pdu, err) {
+	if (err && err.code === 'ERESPONSETIMEOUT') {
+		// No response within 30 seconds. The message may or may not have been accepted.
+	} else if (err && err.code === 'ESESSIONCLOSED') {
+		// The session closed first. The message may or may not have been accepted.
+	} else {
+		// It could not be written to the socket, see session.send().
+	}
+});
+```
+
+With `response_timeout` set, a request sent with a `responseCallback` ends in exactly one of:
+
+- its `responseCallback`, called with the response;
+- its `failureCallback`, called with the request pdu and an error whose `code` is
+`'ERESPONSETIMEOUT'` when no response arrived within `response_timeout` ms of `send()`
+(`err.timeout` holds the timeout). The `'response_timeout'` event is emitted as well, so a
+timeout is observable even for a request sent without a `failureCallback`;
+- its `failureCallback`, called with the request pdu and an error whose `code` is
+`'ESESSIONCLOSED'` when the session closed while the request was still waiting: there is no
+point in waiting out the timeout on a connection that is gone. If the connection was closed by
+a socket error, it is available as `err.cause`. The `'response_aborted'` event is emitted as
+well, before `'close'`;
+- its `failureCallback`, called as before when the request could not be written to the socket.
+
+A timeout, or a closed session, does **not** mean that the peer did not process the request:
+it may well have, and only its response is missing. Resending a `submit_sm` that failed this
+way can deliver the message twice. This is why the request pdu is passed on untouched, rather
+than with its `command_status` set to `ESME_RSUBMITFAIL` as on a write failure: no status was
+received from the peer, so check `err.code` instead.
+
+A response that arrives after its request timed out does not call any callback, but it is
+still emitted as a `'pdu'` event and as its command event (e.g. `'submit_sm_resp'`).
+
+Without `response_timeout`, nothing changes: unanswered requests are never reported, and a
+`failureCallback` is only called for requests that could not be written to the socket.
+
 ### Proxy protocol
 
 [Proxy Protocol v1](https://www.haproxy.org/download/1.8/doc/proxy-protocol.txt) is now
@@ -224,7 +277,11 @@ optional `responseCallback` parameter will be invoked with the response pdu pass
 
 Optional `sendCallback` will be called when the pdu is successfully flushed.
 
-Optional `failureCallback` will be called whenever it is not possible to write to the socket.
+Optional `failureCallback` will be called whenever it is not possible to write to the socket,
+with the pdu (its `command_status` set to `ESME_RSUBMITFAIL`) and, when the write itself failed,
+the write error.
+If the session has a `response_timeout`, it is also called for a request whose response did not
+arrive in time, or had not arrived when the session closed. See [Response timeout](#response-timeout).
 
 #### session.close([callback])
 Closes the current session connection.
@@ -294,6 +351,14 @@ Emitted upon receiving a pdu.
 
 #### Event: 'unknown' `(pdu)`
 Emitted upon receiving an unknown pdu.
+
+#### Event: 'response_timeout' `(pdu)`
+Emitted with the request pdu when its response did not arrive within the `response_timeout`,
+whether or not the request was sent with a `failureCallback`.
+
+#### Event: 'response_aborted' `(pdu)`
+Emitted, on a session with a `response_timeout`, with each request pdu that was still waiting for
+its response when the session closed. Emitted before the `'close'` event.
 
 #### Shortcut events
 When a pdu is received, after emitting the `'pdu'` event, an event with the same

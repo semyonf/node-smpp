@@ -420,6 +420,358 @@ describe('Session', function() {
 
 });
 
+describe('Session response_timeout', function() {
+	// The server never answers on its own: each test decides if and when it does.
+	var server, port, received, clients;
+
+	beforeEach(function(done) {
+		received = [];
+		clients = [];
+		server = smpp.createServer({}, function(session) {
+			session.on('error', function() {});
+			session.on('pdu', function(pdu) {
+				received.push({ session: session, pdu: pdu });
+			});
+		});
+		server.listen(0, done);
+		port = server.address().port;
+	});
+
+	afterEach(function(done) {
+		clients.forEach(function(session) {
+			session.destroy();
+		});
+		server.sessions.forEach(function(session) {
+			session.destroy();
+		});
+		server.close(done);
+	});
+
+	function connect(options, callback) {
+		options.port = port;
+		var session = smpp.connect(options, function() {
+			callback(session);
+		});
+		clients.push(session);
+		return session;
+	}
+
+	function closeFromServerOnceReceived(count) {
+		if (received.length < count) {
+			setTimeout(closeFromServerOnceReceived, 1, count);
+			return;
+		}
+		received[0].session.destroy();
+	}
+
+	function submitSm() {
+		return new smpp.PDU('submit_sm', {
+			destination_addr: '+01123456789',
+			short_message: 'Hello!'
+		});
+	}
+
+	function unexpected(done, what) {
+		return function() {
+			done(new Error('Unexpected ' + what));
+		};
+	}
+
+	it('should fail a request with ERESPONSETIMEOUT and the request pdu when no response arrives in time', function(done) {
+		connect({ response_timeout: 20 }, function(session) {
+			var pdu = submitSm(), events = [];
+			session.on('response_timeout', function(timedOut) {
+				events.push(timedOut);
+			});
+			session.send(pdu, unexpected(done, 'response'), null, function(failed, err) {
+				assert.strictEqual(failed, pdu);
+				assert.equal(failed.command, 'submit_sm');
+				assert.ok(failed.sequence_number > 0);
+				// No status was received from the peer, so none is made up.
+				assert.strictEqual(failed.command_status, 0);
+				assert.ok(err instanceof Error);
+				assert.equal(err.code, 'ERESPONSETIMEOUT');
+				assert.equal(err.timeout, 20);
+				assert.deepStrictEqual(events, [pdu]);
+				assert.deepStrictEqual(session._callbacks, {});
+				done();
+			});
+		});
+	});
+
+	it('should emit response_timeout for a request sent without a failureCallback', function(done) {
+		connect({ response_timeout: 20 }, function(session) {
+			session.submit_sm({ destination_addr: '+01123456789' }, unexpected(done, 'response'));
+			session.on('response_timeout', function(pdu) {
+				assert.equal(pdu.command, 'submit_sm');
+				assert.deepStrictEqual(session._callbacks, {});
+				done();
+			});
+		});
+	});
+
+	it('should not time out requests by default, nor with a response_timeout of 0', function(done) {
+		var connected = 0;
+		[{}, { response_timeout: 0 }].forEach(function(options) {
+			connect(options, function(session) {
+				var pdu = submitSm();
+				session.on('response_timeout', unexpected(done, 'response_timeout event'));
+				session.send(pdu, unexpected(done, 'response'), null, unexpected(done, 'failure'));
+				assert.strictEqual(session._callbacks[pdu.sequence_number].timer, null);
+				if (++connected === 2) {
+					setTimeout(function() {
+						clients.forEach(function(client) {
+							assert.equal(Object.keys(client._callbacks).length, 1);
+						});
+						done();
+					}, 30);
+				}
+			});
+		});
+	});
+
+	it('should reject invalid response_timeout values', function() {
+		[-1, NaN, Infinity, '1000', true, 0x80000000].forEach(function(value) {
+			assert.throws(function() {
+				smpp.connect({ port: port, response_timeout: value });
+			}, RangeError, 'connect() accepted ' + value);
+			assert.throws(function() {
+				smpp.createServer({ response_timeout: value });
+			}, RangeError, 'createServer() accepted ' + value);
+		});
+		[undefined, null, 0, 1, 0x7fffffff].forEach(function(value) {
+			smpp.createServer({ response_timeout: value });
+		});
+	});
+
+	it('should clear the timer when the response arrives in time', function(done) {
+		server.once('session', function(serverSession) {
+			serverSession.on('submit_sm', function(pdu) {
+				serverSession.send(pdu.response());
+			});
+		});
+		connect({ response_timeout: 30 }, function(session) {
+			var pdu = submitSm(), entry;
+			session.on('response_timeout', unexpected(done, 'response_timeout event'));
+			session.send(pdu, function(response) {
+				assert.equal(response.command, 'submit_sm_resp');
+				assert.strictEqual(entry.timer, null);
+				assert.deepStrictEqual(session._callbacks, {});
+				// Outlive the timeout, in case the timer was not cleared after all.
+				setTimeout(done, 50);
+			}, null, unexpected(done, 'failure'));
+			entry = session._callbacks[pdu.sequence_number];
+			assert.ok(entry.timer);
+		});
+	});
+
+	it('should not call any callback for a response arriving after the timeout, but still emit it', function(done) {
+		var held = null, timedOut = false, failures = 0;
+		// The server answers only once the client has timed out, whatever the scheduling.
+		function respondLate() {
+			if (held && timedOut) held.session.send(held.pdu.response());
+		}
+		server.once('session', function(serverSession) {
+			serverSession.on('submit_sm', function(pdu) {
+				held = { session: serverSession, pdu: pdu };
+				respondLate();
+			});
+		});
+		connect({ response_timeout: 20 }, function(session) {
+			var pduEvents = 0;
+			session.on('pdu', function() {
+				pduEvents++;
+			});
+			session.on('submit_sm_resp', function(response) {
+				assert.equal(response.sequence_number, held.pdu.sequence_number);
+				assert.equal(pduEvents, 1);
+				setImmediate(function() {
+					assert.equal(failures, 1);
+					done();
+				});
+			});
+			session.send(submitSm(), unexpected(done, 'response callback'), null, function(pdu, err) {
+				failures++;
+				assert.equal(err.code, 'ERESPONSETIMEOUT');
+				timedOut = true;
+				respondLate();
+			});
+		});
+	});
+
+	it('should fail every pending request exactly once, with its own pdu, when the session closes', function(done) {
+		connect({ response_timeout: 1000 }, function(session) {
+			var sent = [submitSm(), submitSm(), new smpp.PDU('query_sm')], failures = [], aborted = [];
+			session.on('response_aborted', function(pdu) {
+				aborted.push(pdu);
+			});
+			sent.forEach(function(pdu) {
+				session.send(pdu, unexpected(done, 'response'), null, function(failed, err) {
+					failures.push({ pdu: failed, err: err });
+				});
+			});
+			var entries = sent.map(function(pdu) {
+				return session._callbacks[pdu.sequence_number];
+			});
+			session.on('close', function() {
+				// Settled before 'close' is emitted.
+				assert.deepStrictEqual(failures.map(function(f) { return f.pdu; }), sent);
+				failures.forEach(function(f) {
+					assert.equal(f.err.code, 'ESESSIONCLOSED');
+					assert.strictEqual(f.err.cause, undefined);
+					assert.strictEqual(f.pdu.command_status, 0);
+				});
+				assert.deepStrictEqual(aborted, sent);
+				assert.deepStrictEqual(session._callbacks, {});
+				entries.forEach(function(entry) {
+					assert.strictEqual(entry.timer, null);
+				});
+				setImmediate(function() {
+					assert.equal(failures.length, 3);
+					done();
+				});
+			});
+			closeFromServerOnceReceived(3);
+		});
+	});
+
+	it('should fail a pending request once when a socket error is followed by close, with the error as cause', function(done) {
+		connect({ response_timeout: 1000 }, function(session) {
+			var boom = new Error('boom'), failures = [];
+			session.on('error', function(e) {
+				assert.strictEqual(e, boom);
+				assert.equal(failures.length, 0, 'failed on error rather than on close');
+			});
+			session.on('close', function() {
+				setTimeout(function() {
+					assert.equal(failures.length, 1);
+					assert.equal(failures[0].code, 'ESESSIONCLOSED');
+					assert.strictEqual(failures[0].cause, boom);
+					done();
+				}, 10);
+			});
+			session.send(submitSm(), unexpected(done, 'response'), function() {
+				session.socket.destroy(boom);
+			}, function(pdu, err) {
+				failures.push(err);
+			});
+		});
+	});
+
+	it('should report a request exactly once when the socket is destroyed while writing it', function(done) {
+		connect({ response_timeout: 1000 }, function(session) {
+			var failures = [];
+			session.on('error', function() {});
+			session.on('close', function() {
+				// Leave room for a write callback that runs after 'close'.
+				setTimeout(function() {
+					assert.equal(failures.length, 1);
+					done();
+				}, 20);
+			});
+			session.send(submitSm(), unexpected(done, 'response'), null, function(pdu, err) {
+				failures.push(err);
+			});
+			session.socket.destroy(new Error('boom'));
+		});
+	});
+
+	it('should not report a write failure for a request that already timed out', function(done) {
+		connect({ response_timeout: 10 }, function(session) {
+			var failures = [], writeCallback;
+			// Hold the write so that it fails only after the timeout.
+			session.socket.write = function(buffer, callback) {
+				writeCallback = callback;
+				return true;
+			};
+			session.send(submitSm(), unexpected(done, 'response'), unexpected(done, 'send'), function(pdu, err) {
+				failures.push(err.code);
+				if (failures.length > 1) return;
+				writeCallback(new Error('EPIPE'));
+				setImmediate(function() {
+					assert.deepStrictEqual(failures, ['ERESPONSETIMEOUT']);
+					done();
+				});
+			});
+		});
+	});
+
+	it('should report a write failure the way it always did, and not time the request out afterwards', function(done) {
+		connect({ response_timeout: 10 }, function(session) {
+			var failures = [], writeError = new Error('EPIPE');
+			session.on('response_timeout', unexpected(done, 'response_timeout event'));
+			session.socket.write = function(buffer, callback) {
+				setImmediate(callback, writeError);
+				return true;
+			};
+			session.send(submitSm(), unexpected(done, 'response'), unexpected(done, 'send'), function(pdu, err) {
+				failures.push(err);
+				assert.equal(pdu.command_status, smpp.ESME_RSUBMITFAIL);
+				assert.deepStrictEqual(session._callbacks, {});
+				// Outlive the timeout, in case the timer was not cleared.
+				setTimeout(function() {
+					assert.deepStrictEqual(failures, [writeError]);
+					done();
+				}, 30);
+			});
+		});
+	});
+
+	it('should leave pending requests alone on close without response_timeout', function(done) {
+		connect({}, function(session) {
+			var pdu = submitSm();
+			session.on('response_aborted', unexpected(done, 'response_aborted event'));
+			session.send(pdu, unexpected(done, 'response'), null, unexpected(done, 'failure'));
+			session.on('close', function() {
+				setImmediate(function() {
+					assert.ok(session._callbacks[pdu.sequence_number]);
+					done();
+				});
+			});
+			closeFromServerOnceReceived(1);
+		});
+	});
+
+	it('should apply the server response_timeout option to the sessions it accepts', function(done) {
+		var client;
+		var timingOutServer = smpp.createServer({ response_timeout: 20 }, function(session) {
+			session.on('error', function() {});
+			session.deliver_sm({ source_addr: '+01123456789' }, unexpected(done, 'response'), null, function(pdu, err) {
+				assert.equal(pdu.command, 'deliver_sm');
+				assert.equal(err.code, 'ERESPONSETIMEOUT');
+				assert.equal(err.timeout, 20);
+				client.destroy();
+				timingOutServer.close(function() {
+					done();
+				});
+			});
+		});
+		timingOutServer.listen(0, function() {
+			// The client never answers the deliver_sm.
+			client = smpp.connect({ port: timingOutServer.address().port });
+			client.on('error', function() {});
+		});
+	});
+
+	it('should not let the timer of a request time out a newer request reusing its sequence_number', function(done) {
+		connect({ response_timeout: 20 }, function(session) {
+			// As when proxying, where sequence numbers are provided by the caller.
+			var first = new smpp.PDU('submit_sm', { sequence_number: 42 });
+			var second = new smpp.PDU('submit_sm', { sequence_number: 42 });
+			session.send(first, unexpected(done, 'response to the first request'), null,
+				unexpected(done, 'failure of the displaced request'));
+			var firstEntry = session._callbacks[42];
+			session.send(second, unexpected(done, 'response to the second request'), null, function(pdu, err) {
+				assert.strictEqual(pdu, second);
+				assert.equal(err.code, 'ERESPONSETIMEOUT');
+				setImmediate(done);
+			});
+			assert.notStrictEqual(session._callbacks[42], firstEntry);
+			assert.strictEqual(firstEntry.timer, null);
+		});
+	});
+});
+
 describe('Client/Server simulations', function() {
 
 	describe('standard connection simulations', function() {
