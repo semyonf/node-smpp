@@ -287,15 +287,18 @@ Resumes the session after a call to `pause()`.
 Sends an `enquire_link` every `period` ms. If `timeout` is given (it defaults to the
 `enquire_link_timeout` option), every `enquire_link` that gets no response within `timeout` ms
 emits `enquire_link_timeout` and, unless `close_on_enquire_link_timeout` is `false`, destroys the
-session. Replaces the schedule set by a previous call or by the `auto_enquire_link_period` option.
+session. Replaces the schedule set by a previous call or by the `auto_enquire_link_period` option;
+`enquire_link` already sent are still awaited with their original timeout.
 On a client session that is not connected yet, the schedule starts once the connection is
 established.
 
 #### session.stopEnquireLink()
 Stops sending `enquire_link` and stops waiting for responses to the ones already sent.
 `session.close()` and `session.destroy()` also stop sending them. After `session.close()` the
-responses to the ones already sent are still awaited, so a peer that never closes its side of the
-connection is dropped by `enquire_link_timeout`.
+response to an `enquire_link` still in flight is awaited, so if the peer never closes its side of
+the connection, the timeout destroys the session (unless `close_on_enquire_link_timeout` is
+`false`). With nothing in flight, `session.close()` waits for the peer like before: call
+`session.destroy()` if the `'close'` event doesn't follow in time.
 
 #### session.autoEnquireLinkResponse
 Whether incoming `enquire_link` are answered automatically. Initialized from the

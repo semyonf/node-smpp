@@ -156,7 +156,8 @@ export class Session extends EventEmitter {
   private _callbacks = {};
   private _interval: NodeJS.Timeout | 0 = 0;
   private _enquireLink: { period: number; timeout: number } | null = null;
-  private _enquireLinkTimers = new Set<NodeJS.Timeout>();
+  // Awaited enquire_link: timeout timer -> the request and the response callback registered for it
+  private _enquireLinkTimers = new Map<NodeJS.Timeout, { pdu: PDU; settle: () => void }>();
   private _command_length: number | null = null;
   private _mode: string | null = null;
   private _id: number = Math.floor(Math.random() * (999999 - 100000)) + 100000; // random session id
@@ -579,7 +580,8 @@ export class Session extends EventEmitter {
   }
 
   private _startEnquireLinkInterval(): void {
-    this._stopEnquireLinkInterval();
+    // Only the schedule is replaced: the enquire_link already sent stay awaited.
+    this._clearEnquireLinkSchedule();
     // Not writable: close() was already called, e.g. from a 'connect' listener.
     if (!this._enquireLink || !this.socket.writable) {
       return;
@@ -590,8 +592,11 @@ export class Session extends EventEmitter {
 
   private _stopEnquireLinkInterval(): void {
     this._clearEnquireLinkSchedule();
-    for (const timer of this._enquireLinkTimers) {
+    for (const [timer, { pdu, settle }] of this._enquireLinkTimers) {
       clearTimeout(timer);
+      if (this._callbacks[pdu.sequence_number] === settle) {
+        delete this._callbacks[pdu.sequence_number];
+      }
     }
     this._enquireLinkTimers.clear();
   }
@@ -612,9 +617,12 @@ export class Session extends EventEmitter {
     }
     const timer = setTimeout(() => {
       this._enquireLinkTimers.delete(timer);
-      delete this._callbacks[pdu.sequence_number];
+      if (this._callbacks[pdu.sequence_number] === settle) {
+        delete this._callbacks[pdu.sequence_number];
+      }
       if (this.socket.destroyed) {
-        // destroy() was called in the same timers phase, before 'close' cleared this timer.
+        // The socket was destroyed directly (not through destroy(), which clears the timers) and
+        // 'close' hasn't run yet: the session is going away anyway.
         return;
       }
       this.debug('enquire_link.timeout', 'no enquire_link_resp within ' + timeout + 'ms', {
@@ -631,7 +639,8 @@ export class Session extends EventEmitter {
       clearTimeout(timer);
       this._enquireLinkTimers.delete(timer);
     };
-    this._enquireLinkTimers.add(timer);
+    // Registered before send(): a socket that isn't writable fails the send synchronously.
+    this._enquireLinkTimers.set(timer, { pdu, settle });
     // A failed write was never seen by the peer, so there is no response to wait for.
     this.send(pdu, settle, undefined, settle);
   }

@@ -908,35 +908,87 @@ describe('enquire_link', function() {
 			}, 120);
 		});
 
-		it('should keep waiting for the responses after close() and drop a half-open peer', function(done) {
-			// A peer that stopped answering doesn't close its side either, so close() alone would hang.
-			var net = require('net');
-			var sockets = [];
-			var deadPeer = net.createServer({ allowHalfOpen: true }, function(socket) {
-				sockets.push(socket);
-			});
-			deadPeer.listen(0, function() {
-				var timedOut = false;
-				var session = smpp.connect({
-					port: deadPeer.address().port,
-					auto_enquire_link_period: 10,
-					enquire_link_timeout: 50
+		// A peer that stopped answering and doesn't close its side of the connection either.
+		function withDeadPeer(test) {
+			return function(done) {
+				var net = require('net');
+				var sockets = [];
+				var deadPeer = net.createServer({ allowHalfOpen: true }, function(socket) {
+					sockets.push(socket);
 				});
-				session.once('send', function() {
-					session.close();
-				});
-				session.on('enquire_link_timeout', function() {
-					timedOut = true;
-				});
-				session.on('close', function() {
-					assert.ok(timedOut, 'the session was not dropped by the enquire_link timeout');
-					sockets.forEach(function(socket) {
-						socket.destroy();
+				deadPeer.listen(0, function() {
+					test(deadPeer.address().port, function(err) {
+						sockets.forEach(function(socket) {
+							socket.destroy();
+						});
+						deadPeer.close(function() {
+							done(err);
+						});
 					});
-					deadPeer.close(done);
+				});
+			};
+		}
+
+		it('should keep waiting for the responses after close() and drop a half-open peer', withDeadPeer(function(deadPort, done) {
+			var timedOut = false;
+			var session = smpp.connect({
+				port: deadPort,
+				auto_enquire_link_period: 10,
+				enquire_link_timeout: 50
+			});
+			session.once('send', function() {
+				session.close();
+			});
+			session.on('enquire_link_timeout', function() {
+				timedOut = true;
+			});
+			session.on('close', function() {
+				assert.ok(timedOut, 'the session was not dropped by the enquire_link timeout');
+				done();
+			});
+		}));
+
+		it('should keep waiting for the responses when the schedule is replaced', withDeadPeer(function(deadPort, done) {
+			var timedOut = false;
+			var session = smpp.connect({
+				port: deadPort,
+				auto_enquire_link_period: 10,
+				enquire_link_timeout: 50
+			});
+			session.once('send', function() {
+				session.close();
+				session.startEnquireLink(10, 50);
+				assert.equal(session._enquireLinkTimers.size, 1, 'the awaited enquire_link was forgotten');
+			});
+			session.on('enquire_link_timeout', function() {
+				timedOut = true;
+			});
+			session.on('close', function() {
+				assert.ok(timedOut, 'the session was not dropped by the enquire_link timeout');
+				done();
+			});
+		}));
+
+		it('should not wait for a response to an enquire_link that failed to send synchronously', withDeadPeer(function(deadPort, done) {
+			var session = smpp.connect({
+				port: deadPort,
+				auto_enquire_link_period: 10,
+				enquire_link_timeout: 20
+			}, function() {
+				setImmediate(function() {
+					// Unlike close(), this leaves the keepalive running against a socket that is no longer writable.
+					session.socket.end();
 				});
 			});
-		});
+			session.on('enquire_link_timeout', function() {
+				done(new Error('enquire_link_timeout emitted for an enquire_link that was never sent'));
+			});
+			setTimeout(function() {
+				assert.equal(session._enquireLinkTimers.size, 0);
+				session.destroy();
+				done();
+			}, 100);
+		}));
 
 		it('should stop the keepalive synchronously on destroy()', function(done) {
 			var session = smpp.connect({ port: port, auto_enquire_link_period: 10, enquire_link_timeout: 1000 }, function() {
@@ -1039,6 +1091,7 @@ describe('enquire_link', function() {
 				session.startEnquireLink(10, 50);
 				setTimeout(function() {
 					session.stopEnquireLink();
+					assert.deepEqual(Object.keys(session._callbacks), [], 'stopEnquireLink() kept response callbacks');
 				}, 15);
 				setTimeout(function() {
 					assert.ok(!session.closed, 'session was closed after stopEnquireLink()');
