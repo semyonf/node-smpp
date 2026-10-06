@@ -199,6 +199,51 @@ still emitted as a `'pdu'` event and as its command event (e.g. `'submit_sm_resp
 Without `response_timeout`, nothing changes: unanswered requests are never reported, and a
 `failureCallback` is only called for requests that could not be written to the socket.
 
+### Keeping the link alive (enquire_link)
+
+Both sides of an SMPP session are expected to answer `enquire_link` with `enquire_link_resp`, and
+to drop a link whose peer stops answering. Both are opt-in, on client sessions (`smpp.connect()`
+options) and server sessions (`smpp.createServer()` options, applied to every accepted session):
+
+| Option | Default | Description |
+|---|---|---|
+| `auto_enquire_link_response` | `false` | Answer every incoming `enquire_link` with an `enquire_link_resp`. Don't also answer it from your own `enquire_link` handler, or the peer gets two responses. |
+| `auto_enquire_link_period` | unset | Send an `enquire_link` every this many ms. Client sessions start one period after the TCP connection is established (so before the TLS handshake and the bind), server sessions one period after accepting the connection. |
+| `enquire_link_timeout` | unset | How long, in ms, to wait for the `enquire_link_resp` to each of those `enquire_link`. When it does not arrive in time, an `enquire_link_timeout` event is emitted. Unset or `0` disables the check. |
+| `close_on_enquire_link_timeout` | `true` | Destroy the session after emitting `enquire_link_timeout`. Set to `false` to decide on your own in the event handler. |
+
+``` javascript
+var session = smpp.connect({
+	url: 'smpp://example.com:2775',
+	auto_enquire_link_response: true,
+	auto_enquire_link_period: 30000,
+	enquire_link_timeout: 10000
+});
+session.on('enquire_link_timeout', function(pdu) {
+	console.log('no enquire_link_resp for sequence', pdu.sequence_number, ', dropping the link');
+});
+session.on('close', function() {
+	setTimeout(function() {
+		session.connect(); // the enquire_link options apply to the new connection too
+	}, 5000);
+});
+```
+
+The same can be controlled at runtime with `session.startEnquireLink()`, `session.stopEnquireLink()`
+and `session.autoEnquireLinkResponse`.
+
+The `enquire_link` sent by `auto_enquire_link_period` only wait for `enquire_link_timeout`:
+`response_timeout` doesn't apply to them, and they never show up in `'response_timeout'` or
+`'response_aborted'` events. An `enquire_link` you send yourself is an ordinary request.
+
+Any response carrying the sequence number of the `enquire_link` counts as an answer, including a
+`generic_nack`: some SMSCs reject an `enquire_link` sent before the bind that way, but they still
+answered, so the link is alive.
+
+Responses are only read while the session is not paused, so keep `session.pause()` shorter than
+`enquire_link_timeout`, or the link is considered dead. A paused session doesn't answer incoming
+`enquire_link` automatically either, so the peer's own timeout applies as well.
+
 ### Proxy protocol
 
 [Proxy Protocol v1](https://www.haproxy.org/download/1.8/doc/proxy-protocol.txt) is now
@@ -293,13 +338,48 @@ that don't honor gracefull tear-down. ( Looking at you SMPPSim )
 If supplied, the `callback` is called once the session is fully closed.
 
 #### session.connect()
-Can be used to reconnect a closed connection.
+Connects a client session again, typically from a `'close'`, `'error'` or `'enquire_link_timeout'`
+listener. The session gets a new connection: sequence numbers start over, and a PDU the previous
+connection delivered only partly is discarded. Requests still waiting for a response on the
+previous connection fail with `ESESSIONCLOSED` if `response_timeout` is set (see
+[Response timeout](#response-timeout)), and are dropped otherwise. Event listeners, options and
+the `enquire_link` schedule are kept, and the connect listener passed to `smpp.connect()` runs
+again.
+
+If the previous connection is still open or still being established, it is destroyed first. Either
+way none of its events are emitted any more, so a `'close'` that the previous connection emits
+after the error that you reconnected on does not reach your listeners.
+
+Throws when called on a server session, and when `net.connect()` or `tls.connect()` reject the
+options, in which case the session is left as it was.
 
 #### session.pause()
 Can be used to postpone incoming pdu events untill calling `session.resume()`.
 
 #### session.resume()
 Resumes the session after a call to `pause()`.
+
+#### session.startEnquireLink(period, [timeout])
+Sends an `enquire_link` every `period` ms. If `timeout` is given (it defaults to the
+`enquire_link_timeout` option), every `enquire_link` that gets no response within `timeout` ms
+emits `enquire_link_timeout` and, unless `close_on_enquire_link_timeout` is `false`, destroys the
+session. Replaces the schedule set by a previous call or by the `auto_enquire_link_period` option;
+`enquire_link` already sent are still awaited with their original timeout. The schedule is kept
+across `session.connect()`.
+On a client session that is not connected yet, the schedule starts once the connection is
+established.
+
+#### session.stopEnquireLink()
+Stops sending `enquire_link` and stops waiting for responses to the ones already sent.
+`session.close()` and `session.destroy()` also stop sending them. After `session.close()` the
+response to an `enquire_link` still in flight is awaited, so if the peer never closes its side of
+the connection, the timeout destroys the session (unless `close_on_enquire_link_timeout` is
+`false`). With nothing in flight, `session.close()` waits for the peer like before: call
+`session.destroy()` if the `'close'` event doesn't follow in time.
+
+#### session.autoEnquireLinkResponse
+Whether incoming `enquire_link` are answered automatically. Initialized from the
+`auto_enquire_link_response` option and can be changed at any time.
 
 #### session.getPeerCertificate([detailed])
 Returns the certificate presented by the TLS peer, as returned by node's
@@ -349,6 +429,12 @@ Emitted when a pdu is being sent over the session with the pdu as the argument.
 #### Event: 'pdu' `(pdu)`
 Emitted upon receiving a pdu.
 
+#### Event: 'enquire_link_timeout' `(pdu)`
+Emitted when an `enquire_link` sent by `auto_enquire_link_period` or `session.startEnquireLink()`
+got no `enquire_link_resp` within the timeout. `pdu` is that `enquire_link`. Unless
+`close_on_enquire_link_timeout` is `false`, the session is destroyed right after, so a `'close'`
+event follows.
+
 #### Event: 'unknown' `(pdu)`
 Emitted upon receiving an unknown pdu.
 
@@ -369,6 +455,9 @@ Creates a new SMPP server. The `sessionListener` argument is automatically set
 as a listener for the 'session' event.
 If options include `key` and `cert`, a TLS secured server will be created.
 Include `rejectUnauthorized: false` to disable the certificate validation.
+The `enquire_link` options described in
+[Keeping the link alive](#keeping-the-link-alive-enquire_link) apply to every session the server
+accepts.
 
 ### smpp.Server
 The base object for a SMPP server created with `smpp.createServer()`.
