@@ -170,7 +170,9 @@ session.on('enquire_link_timeout', function(pdu) {
 	console.log('no enquire_link_resp for sequence', pdu.sequence_number, ', dropping the link');
 });
 session.on('close', function() {
-	// open a new session with smpp.connect() here
+	setTimeout(function() {
+		session.connect(); // the enquire_link options apply to the new connection too
+	}, 5000);
 });
 ```
 
@@ -275,7 +277,16 @@ that don't honor gracefull tear-down. ( Looking at you SMPPSim )
 If supplied, the `callback` is called once the session is fully closed.
 
 #### session.connect()
-Can be used to reconnect a closed connection.
+Connects a client session again, typically from a `'close'` or `'error'` listener. The session gets a
+new connection: sequence numbers start over, responses that were still awaited on the previous
+connection are dropped, and so is a PDU it delivered only partly. Event listeners, options and the
+`enquire_link` schedule are kept, and the connect listener passed to `smpp.connect()` runs again.
+
+If the previous connection is still open or still being established, it is destroyed first. Either
+way none of its events are emitted any more, so a `'close'` that the previous connection emits
+after the error that you reconnected on does not reach your listeners.
+
+Throws when called on a server session.
 
 #### session.pause()
 Can be used to postpone incoming pdu events untill calling `session.resume()`.
@@ -288,7 +299,8 @@ Sends an `enquire_link` every `period` ms. If `timeout` is given (it defaults to
 `enquire_link_timeout` option), every `enquire_link` that gets no response within `timeout` ms
 emits `enquire_link_timeout` and, unless `close_on_enquire_link_timeout` is `false`, destroys the
 session. Replaces the schedule set by a previous call or by the `auto_enquire_link_period` option;
-`enquire_link` already sent are still awaited with their original timeout.
+`enquire_link` already sent are still awaited with their original timeout. The schedule is kept
+across `session.connect()`.
 On a client session that is not connected yet, the schedule starts once the connection is
 established.
 
