@@ -73,11 +73,11 @@ var server = smpp.createServer({
 	debug: true
 }, function(session) {
 	session.on('error', function (err) {
-		// Something ocurred, not listening for this event will terminate the program
+		// Something occurred, not listening for this event will terminate the program
   	});
 	session.on('bind_transceiver', function(pdu) {
 		// we pause the session to prevent further incoming pdu events,
-		// untill we authorize the session with some async operation.
+		// until we authorize the session with some async operation.
 		session.pause();
 		checkAsyncUserPass(pdu.system_id, pdu.password, function(err) {
 			if (err) {
@@ -334,7 +334,7 @@ If supplied, the `callback` is called once the session is fully closed.
 
 #### session.destroy([callback])
 Forcibly closes the current session connection. This aids some broken servers,
-that don't honor gracefull tear-down. ( Looking at you SMPPSim )
+that don't honor graceful tear-down. ( Looking at you SMPPSim )
 If supplied, the `callback` is called once the session is fully closed.
 
 #### session.connect()
@@ -354,7 +354,7 @@ Throws when called on a server session, and when `net.connect()` or `tls.connect
 options, in which case the session is left as it was.
 
 #### session.pause()
-Can be used to postpone incoming pdu events untill calling `session.resume()`.
+Can be used to postpone incoming pdu events until calling `session.resume()`.
 
 #### session.resume()
 Resumes the session after a call to `pause()`.
@@ -399,7 +399,7 @@ var session = smpp.connect('ssmpp://smpp.example.org:3550', function() {
 
 #### Shortcut methods
 For all smpp operations you can call methods with the same name as the operation
-name, which is equivalent to createing a pdu instance and then sending it over
+name, which is equivalent to creating a pdu instance and then sending it over
 the session.
 
 For example calling `session.submit_sm(options, [responseCallback], [sendCallback], [failureCallback])` is equivalent to:
@@ -522,7 +522,7 @@ automatically set depending on the `dest_address` and `unsuccess_sme` parameters
 respectively.
 - TLV parameters which can be specified multiple times
 (e.g. `broadcast_area_identifier`), must be specified as an array, even if you
-want to specifiy just one item.
+want to specify just one item.
 
 #### pdu.isResponse()
 Returns `true` if the pdu is a response pdu, otherwise returns false;
