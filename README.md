@@ -146,6 +146,40 @@ By default the socket will be dropped after 30000 ms if it doesn't connect.
 A `connectTimeout` option can be sent when making connections with the server in order
 to change this setting.
 
+### Keeping the link alive (enquire_link)
+
+Both sides of an SMPP session are expected to answer `enquire_link` with `enquire_link_resp`, and
+to drop a link whose peer stops answering. Both are opt-in, on client sessions (`smpp.connect()`
+options) and server sessions (`smpp.createServer()` options, applied to every accepted session):
+
+| Option | Default | Description |
+|---|---|---|
+| `auto_enquire_link_response` | `false` | Answer every incoming `enquire_link` with an `enquire_link_resp`. Don't also answer it from your own `enquire_link` handler, or the peer gets two responses. |
+| `auto_enquire_link_period` | unset | Send an `enquire_link` every this many ms. Client sessions start one period after connecting, server sessions one period after accepting the connection. |
+| `enquire_link_timeout` | unset | How long, in ms, to wait for the `enquire_link_resp` to each of those `enquire_link`. When it does not arrive in time, an `enquire_link_timeout` event is emitted. Unset or `0` disables the check. |
+| `close_on_enquire_link_timeout` | `true` | Destroy the session after emitting `enquire_link_timeout`. Set to `false` to decide on your own in the event handler. |
+
+``` javascript
+var session = smpp.connect({
+	url: 'smpp://example.com:2775',
+	auto_enquire_link_response: true,
+	auto_enquire_link_period: 30000,
+	enquire_link_timeout: 10000
+});
+session.on('enquire_link_timeout', function(pdu) {
+	console.log('no enquire_link_resp for sequence', pdu.sequence_number, ', dropping the link');
+});
+session.on('close', function() {
+	// reconnect here
+});
+```
+
+The same can be controlled at runtime with `session.startEnquireLink()`, `session.stopEnquireLink()`
+and `session.autoEnquireLinkResponse`.
+
+Responses are only read while the session is not paused, so keep `session.pause()` shorter than
+`enquire_link_timeout`, or the link is considered dead.
+
 ### Proxy protocol
 
 [Proxy Protocol v1](https://www.haproxy.org/download/1.8/doc/proxy-protocol.txt) is now
@@ -244,6 +278,20 @@ Can be used to postpone incoming pdu events untill calling `session.resume()`.
 #### session.resume()
 Resumes the session after a call to `pause()`.
 
+#### session.startEnquireLink(period, [timeout])
+Sends an `enquire_link` every `period` ms. If `timeout` is given (it defaults to the
+`enquire_link_timeout` option), every `enquire_link` that gets no response within `timeout` ms
+emits `enquire_link_timeout` and, unless `close_on_enquire_link_timeout` is `false`, destroys the
+session. Replaces the schedule set by a previous call or by the `auto_enquire_link_period` option,
+and is kept across `session.connect()` reconnects.
+
+#### session.stopEnquireLink()
+Stops sending `enquire_link` and stops waiting for responses to the ones already sent.
+
+#### session.autoEnquireLinkResponse
+Whether incoming `enquire_link` are answered automatically. Initialized from the
+`auto_enquire_link_response` option and can be changed at any time.
+
 #### session.getPeerCertificate([detailed])
 Returns the certificate presented by the TLS peer, as returned by node's
 [`tls.TLSSocket.getPeerCertificate()`](https://nodejs.org/api/tls.html#tlssocketgetpeercertificatedetailed).
@@ -292,6 +340,12 @@ Emitted when a pdu is being sent over the session with the pdu as the argument.
 #### Event: 'pdu' `(pdu)`
 Emitted upon receiving a pdu.
 
+#### Event: 'enquire_link_timeout' `(pdu)`
+Emitted when an `enquire_link` sent by `auto_enquire_link_period` or `session.startEnquireLink()`
+got no `enquire_link_resp` within the timeout. `pdu` is that `enquire_link`. Unless
+`close_on_enquire_link_timeout` is `false`, the session is destroyed right after, so a `'close'`
+event follows.
+
 #### Event: 'unknown' `(pdu)`
 Emitted upon receiving an unknown pdu.
 
@@ -304,6 +358,9 @@ Creates a new SMPP server. The `sessionListener` argument is automatically set
 as a listener for the 'session' event.
 If options include `key` and `cert`, a TLS secured server will be created.
 Include `rejectUnauthorized: false` to disable the certificate validation.
+The `enquire_link` options described in
+[Keeping the link alive](#keeping-the-link-alive-enquire_link) apply to every session the server
+accepts.
 
 ### smpp.Server
 The base object for a SMPP server created with `smpp.createServer()`.

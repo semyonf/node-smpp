@@ -5,7 +5,7 @@ import { parse } from 'url';
 import * as defs from './defs';
 import { PDU } from './pdu';
 import { EventEmitter } from 'events';
-import { SessionEventMap, AnyPDU } from './types';
+import { SessionEventMap, AnyPDU, EnquireLinkPDU } from './types';
 
 const proxy = require('findhit-proxywrap').proxy;
 
@@ -45,6 +45,15 @@ export interface ConnectOptions {
   debugListener?: DebugListener;
   /** Auto-send enquire_link at this interval (milliseconds) */
   auto_enquire_link_period?: number;
+  /**
+   * How long to wait for the enquire_link_resp to an auto-sent enquire_link (milliseconds).
+   * When it does not arrive in time, 'enquire_link_timeout' is emitted. Unset or 0 disables the check.
+   */
+  enquire_link_timeout?: number;
+  /** Destroy the session when an enquire_link_resp does not arrive in time (default: true) */
+  close_on_enquire_link_timeout?: boolean;
+  /** Answer incoming enquire_link with enquire_link_resp automatically (default: false) */
+  auto_enquire_link_response?: boolean;
   /** Alternative: connection URL (smpp://host:port or ssmpp://host:port for TLS) */
   url?: string;
   /** Additional options passed to net.connect or tls.connect */
@@ -75,6 +84,14 @@ export interface ServerOptions {
   debug?: boolean;
   /** Custom debug listener function */
   debugListener?: DebugListener;
+  /** Auto-send enquire_link to every connected client at this interval (milliseconds) */
+  auto_enquire_link_period?: number;
+  /** See ConnectOptions.enquire_link_timeout */
+  enquire_link_timeout?: number;
+  /** See ConnectOptions.close_on_enquire_link_timeout */
+  close_on_enquire_link_timeout?: boolean;
+  /** Answer incoming enquire_link with enquire_link_resp automatically (default: false) */
+  auto_enquire_link_response?: boolean;
   /** Auto-prepend buffer for testing (internal use) */
   autoPrependBuffer?: Buffer;
   /** Additional options passed to net.Server or tls.Server */
@@ -133,9 +150,13 @@ export class Session extends EventEmitter {
   public proxyProtocolProxy: any = null;
   /** Whether this session runs over TLS */
   public readonly tls: boolean;
+  /** Whether incoming enquire_link PDUs are answered automatically */
+  public autoEnquireLinkResponse: boolean;
   private _busy: boolean = false;
   private _callbacks = {};
   private _interval: NodeJS.Timeout | 0 = 0;
+  private _enquireLink: { period: number; timeout: number } | null = null;
+  private _enquireLinkTimers = new Set<NodeJS.Timeout>();
   private _command_length: number | null = null;
   private _mode: string | null = null;
   private _id: number = Math.floor(Math.random() * (999999 - 100000)) + 100000; // random session id
@@ -252,6 +273,13 @@ export class Session extends EventEmitter {
     super();
 
     this.tls = options.tls === true;
+    this.autoEnquireLinkResponse = options.auto_enquire_link_response === true;
+    if (options.auto_enquire_link_period > 0) {
+      this._enquireLink = {
+        period: options.auto_enquire_link_period,
+        timeout: options.enquire_link_timeout || 0,
+      };
+    }
 
     const self = this;
     let connectTimeout;
@@ -302,11 +330,7 @@ export class Session extends EventEmitter {
           self.debug('server.connected', 'connected to server', { secure: options.tls });
           self.emitMetric('server.connected', 1);
           self.emit('connect'); // @todo should emit the session, but it would break BC
-          if (self.options.auto_enquire_link_period) {
-            self._interval = setInterval(function () {
-              self.enquire_link();
-            }, self.options.auto_enquire_link_period);
-          }
+          self._startEnquireLinkInterval();
         }.bind(this)
       );
       this.socket.on(
@@ -337,21 +361,19 @@ export class Session extends EventEmitter {
         self.emitMetric('server.disconnected', 1);
       }
       self.emit('close');
-      if (self._interval) {
-        clearInterval(self._interval);
-        self._interval = 0;
-      }
+      self._stopEnquireLinkInterval();
     });
     this.socket.on('error', function (e) {
       clearTimeout(connectTimeout);
-      if (self._interval) {
-        clearInterval(self._interval);
-        self._interval = 0;
-      }
+      self._stopEnquireLinkInterval();
       self.debug('socket.error', e.message, e);
       self.emitMetric('socket.error', 1, { error: e });
       self.emit('error', e); // Emitted errors will kill the program if they're not captured.
     });
+
+    if (this._mode === 'server') {
+      this._startEnquireLinkInterval();
+    }
   }
 
   emitMetric(event, value, payload?) {
@@ -380,6 +402,7 @@ export class Session extends EventEmitter {
         'pdu.command.out': '\x1b[32m',
         'pdu.command.error': '\x1b[41m\x1b[30m',
         'socket.error': '\x1b[41m\x1b[30m',
+        'enquire_link.timeout': '\x1b[41m\x1b[30m',
         'socket.data.in': '\x1b[2m',
         'socket.data.out': '\x1b[2m',
         metrics: '\x1b[2m',
@@ -412,6 +435,7 @@ export class Session extends EventEmitter {
 
   connect() {
     this.sequence = 0;
+    this.closed = false;
     this.paused = false;
     this._busy = false;
     this._callbacks = {};
@@ -444,6 +468,9 @@ export class Session extends EventEmitter {
         return;
       }
       this._command_length = null;
+      if (pdu.command === 'enquire_link' && this.autoEnquireLinkResponse) {
+        this.send(pdu.response());
+      }
       this.emit('pdu', pdu);
       this.emit(pdu.command, pdu);
       if (pdu.isResponse() && this._callbacks[pdu.sequence_number]) {
@@ -523,6 +550,82 @@ export class Session extends EventEmitter {
       }.bind(this)
     );
     return true;
+  }
+
+  /**
+   * Start sending enquire_link every `period` milliseconds. When `timeout` is given (defaults to the
+   * enquire_link_timeout option), every enquire_link that is not answered within `timeout`
+   * milliseconds emits 'enquire_link_timeout' and, unless close_on_enquire_link_timeout is false,
+   * destroys the session.
+   *
+   * Replaces any previous schedule, and survives reconnects through connect(). On a client session
+   * that is not connected yet, the first enquire_link goes out one period after connecting.
+   */
+  startEnquireLink(period: number, timeout: number = this.options.enquire_link_timeout || 0): void {
+    if (!(period > 0)) {
+      throw new TypeError('enquire_link period must be a positive number of milliseconds');
+    }
+    this._enquireLink = { period, timeout: timeout > 0 ? timeout : 0 };
+    if (!this.closed && !this.socket.connecting) {
+      this._startEnquireLinkInterval();
+    }
+  }
+
+  /**
+   * Stop sending enquire_link and forget the enquire_link_resp that are still awaited.
+   */
+  stopEnquireLink(): void {
+    this._enquireLink = null;
+    this._stopEnquireLinkInterval();
+  }
+
+  private _startEnquireLinkInterval() {
+    this._stopEnquireLinkInterval();
+    if (!this._enquireLink) {
+      return;
+    }
+    const { period, timeout } = this._enquireLink;
+    this._interval = setInterval(() => this._sendEnquireLink(timeout), period);
+  }
+
+  private _stopEnquireLinkInterval() {
+    if (this._interval) {
+      clearInterval(this._interval);
+      this._interval = 0;
+    }
+    for (const timer of this._enquireLinkTimers) {
+      clearTimeout(timer);
+    }
+    this._enquireLinkTimers.clear();
+  }
+
+  private _sendEnquireLink(timeout: number) {
+    const pdu = new PDU('enquire_link');
+    let timer: NodeJS.Timeout | undefined;
+    const sent = this.send(pdu, () => {
+      if (timer) {
+        clearTimeout(timer);
+        this._enquireLinkTimers.delete(timer);
+      }
+    });
+    if (!sent || !timeout) {
+      return;
+    }
+    timer = setTimeout(() => {
+      this._enquireLinkTimers.delete(timer);
+      delete this._callbacks[pdu.sequence_number];
+      this.debug('enquire_link.timeout', 'no enquire_link_resp within ' + timeout + 'ms', {
+        sequence_number: pdu.sequence_number,
+        timeout: timeout,
+      });
+      this.emitMetric('enquire_link.timeout', 1, { pdu: pdu, timeout: timeout });
+      this.emit('enquire_link_timeout', pdu as unknown as EnquireLinkPDU);
+      if (this.options.close_on_enquire_link_timeout !== false && !this.closed) {
+        this._stopEnquireLinkInterval();
+        this.destroy();
+      }
+    }, timeout);
+    this._enquireLinkTimers.add(timer);
   }
 
   pause() {
@@ -641,6 +744,10 @@ function ServerConstructor(this: any, options: ServerOptions | SessionListener, 
       tls: self.options.tls,
       debug: self.options.debug,
       debugListener: self.options.debugListener || undefined,
+      auto_enquire_link_period: self.options.auto_enquire_link_period,
+      enquire_link_timeout: self.options.enquire_link_timeout,
+      close_on_enquire_link_timeout: self.options.close_on_enquire_link_timeout,
+      auto_enquire_link_response: self.options.auto_enquire_link_response,
     });
     session.server = self;
     if (socket.savedEmit) {

@@ -515,4 +515,6 @@ export type SessionEventMap = {
   error: Error;
   pdu: AnyPDU;
   send: AnyPDU;
+  /** An auto-sent enquire_link got no enquire_link_resp in time; carries that enquire_link */
+  enquire_link_timeout: EnquireLinkPDU;
 };
