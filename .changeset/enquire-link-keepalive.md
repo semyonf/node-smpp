@@ -15,11 +15,9 @@ until TCP noticed, which can take many minutes. New options, accepted by both `s
   many milliseconds for its response. If none arrives, an `enquire_link_timeout` event is emitted
   with the unanswered `enquire_link`, and the session is destroyed unless
   `close_on_enquire_link_timeout` is `false`.
-- `auto_enquire_link_period` now also works on server sessions.
+- `auto_enquire_link_period` now also works on server sessions, and stops when `session.close()` is
+  called instead of firing at a socket that can no longer be written to.
 
 All of them default to the previous behaviour. At runtime they are controlled with
 `session.startEnquireLink(period, [timeout])`, `session.stopEnquireLink()` and the
 `session.autoEnquireLinkResponse` property.
-
-`session.connect()` now also resets the closed state, so `session.close(callback)` after a
-reconnect no longer invokes the callback right away.

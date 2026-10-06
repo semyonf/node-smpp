@@ -155,7 +155,7 @@ options) and server sessions (`smpp.createServer()` options, applied to every ac
 | Option | Default | Description |
 |---|---|---|
 | `auto_enquire_link_response` | `false` | Answer every incoming `enquire_link` with an `enquire_link_resp`. Don't also answer it from your own `enquire_link` handler, or the peer gets two responses. |
-| `auto_enquire_link_period` | unset | Send an `enquire_link` every this many ms. Client sessions start one period after connecting, server sessions one period after accepting the connection. |
+| `auto_enquire_link_period` | unset | Send an `enquire_link` every this many ms. Client sessions start one period after the TCP connection is established (so before the TLS handshake and the bind), server sessions one period after accepting the connection. |
 | `enquire_link_timeout` | unset | How long, in ms, to wait for the `enquire_link_resp` to each of those `enquire_link`. When it does not arrive in time, an `enquire_link_timeout` event is emitted. Unset or `0` disables the check. |
 | `close_on_enquire_link_timeout` | `true` | Destroy the session after emitting `enquire_link_timeout`. Set to `false` to decide on your own in the event handler. |
 
@@ -170,12 +170,16 @@ session.on('enquire_link_timeout', function(pdu) {
 	console.log('no enquire_link_resp for sequence', pdu.sequence_number, ', dropping the link');
 });
 session.on('close', function() {
-	// reconnect here
+	// open a new session with smpp.connect() here
 });
 ```
 
 The same can be controlled at runtime with `session.startEnquireLink()`, `session.stopEnquireLink()`
 and `session.autoEnquireLinkResponse`.
+
+Any response carrying the sequence number of the `enquire_link` counts as an answer, including a
+`generic_nack`: some SMSCs reject an `enquire_link` sent before the bind that way, but they still
+answered, so the link is alive.
 
 Responses are only read while the session is not paused, so keep `session.pause()` shorter than
 `enquire_link_timeout`, or the link is considered dead.
@@ -282,11 +286,13 @@ Resumes the session after a call to `pause()`.
 Sends an `enquire_link` every `period` ms. If `timeout` is given (it defaults to the
 `enquire_link_timeout` option), every `enquire_link` that gets no response within `timeout` ms
 emits `enquire_link_timeout` and, unless `close_on_enquire_link_timeout` is `false`, destroys the
-session. Replaces the schedule set by a previous call or by the `auto_enquire_link_period` option,
-and is kept across `session.connect()` reconnects.
+session. Replaces the schedule set by a previous call or by the `auto_enquire_link_period` option.
+On a client session that is not connected yet, the schedule starts once the connection is
+established.
 
 #### session.stopEnquireLink()
 Stops sending `enquire_link` and stops waiting for responses to the ones already sent.
+`session.close()` also stops sending them, since the connection can no longer be written to.
 
 #### session.autoEnquireLinkResponse
 Whether incoming `enquire_link` are answered automatically. Initialized from the

@@ -732,6 +732,26 @@ describe('enquire_link', function() {
 			});
 		});
 
+		it('should answer before emitting the events', function(done) {
+			var session = smpp.connect({ port: port }, function() {
+				var serverSession = serverSessions[0];
+				var sent = [];
+				var send = serverSession.send;
+				serverSession.send = function(pdu) {
+					sent.push(pdu.command);
+					return send.apply(this, arguments);
+				};
+				serverSession.on('pdu', function() {
+					assert.deepEqual(sent, ['enquire_link_resp']);
+				});
+				serverSession.on('enquire_link', function() {
+					assert.deepEqual(sent, ['enquire_link_resp']);
+					session.destroy(done);
+				});
+				session.enquire_link();
+			});
+		});
+
 		it('should be switchable at runtime', function(done) {
 			var session = smpp.connect({ port: port }, function() {
 				serverSessions[0].autoEnquireLinkResponse = false;
@@ -776,6 +796,7 @@ describe('enquire_link', function() {
 			session.on('close', function() {
 				assert.ok(timedOut, 'enquire_link_timeout was not emitted');
 				assert.equal(timedOut.command, 'enquire_link');
+				assert.equal(timedOut.sequence_number, 1);
 				done();
 			});
 		});
@@ -791,10 +812,95 @@ describe('enquire_link', function() {
 			session.on('close', function() {
 				if (timeouts < 2) done(new Error('session closed on enquire_link timeout'));
 			});
-			session.on('enquire_link_timeout', function() {
+			session.on('enquire_link_timeout', function(pdu) {
+				assert.equal(session._callbacks[pdu.sequence_number], undefined, 'the timed out callback was kept');
 				if (++timeouts === 2) {
 					session.destroy(done);
 				}
+			});
+		});
+
+		it('should not keep callbacks for enquire_link when no timeout is set', function(done) {
+			var session = smpp.connect({ port: port, auto_enquire_link_period: 10 }, function() {
+				var received = 0;
+				serverSessions[0].on('enquire_link', function() {
+					if (++received === 3) {
+						assert.deepEqual(Object.keys(session._callbacks), []);
+						session.destroy(done);
+					}
+				});
+			});
+		});
+
+		it('should take the timeout from the option when startEnquireLink() is not given one', function(done) {
+			var session = smpp.connect({ port: port, enquire_link_timeout: 30 }, function() {
+				session.startEnquireLink(10);
+			});
+			session.on('close', done);
+		});
+
+		it('should ignore a negative timeout option', function(done) {
+			var session = smpp.connect({
+				port: port,
+				auto_enquire_link_period: 10,
+				enquire_link_timeout: -1
+			}, function() {
+				serverSessions[0].on('enquire_link', function(pdu) {
+					serverSessions[0].send(pdu.response());
+				});
+			});
+			session.on('enquire_link_timeout', function() {
+				done(new Error('enquire_link timed out'));
+			});
+			setTimeout(function() {
+				session.destroy(done);
+			}, 150);
+		});
+
+		it('should start a schedule requested before the connection is established', function(done) {
+			var session = smpp.connect({ port: port }, function() {
+				serverSessions[0].on('enquire_link', function() {
+					session.destroy(done);
+				});
+			});
+			session.startEnquireLink(10);
+		});
+
+		it('should not start sending enquire_link when closed from the connect listener', function(done) {
+			var session = smpp.connect({ port: port, auto_enquire_link_period: 10 }, function() {
+				session.close();
+				setImmediate(function() {
+					assert.equal(session._interval, 0, 'the interval was started after close()');
+					done();
+				});
+			});
+		});
+
+		it('should stop sending enquire_link once the peer closes the session', function(done) {
+			var session = smpp.connect({ port: port, auto_enquire_link_period: 10 }, function() {
+				serverSessions[0].destroy();
+			});
+			session.on('close', function() {
+				setTimeout(function() {
+					assert.equal(session._interval, 0, 'the interval survived the close');
+					done();
+				}, 30);
+			});
+		});
+
+		it('should stop sending enquire_link once the session is closed', function(done) {
+			var session = smpp.connect({ port: port, auto_enquire_link_period: 10 }, function() {
+				setTimeout(function() {
+					assert.notEqual(session._interval, 0, 'the interval did not start');
+					session.close();
+					assert.equal(session._interval, 0, 'close() kept the interval');
+				}, 5);
+			});
+			session.on('close', function() {
+				setTimeout(function() {
+					assert.equal(session._interval, 0, 'the interval survived the close');
+					done();
+				}, 30);
 			});
 		});
 
@@ -803,7 +909,7 @@ describe('enquire_link', function() {
 			var session = smpp.connect({
 				port: port,
 				auto_enquire_link_period: 20,
-				enquire_link_timeout: 50
+				enquire_link_timeout: 200
 			}, function() {
 				serverSessions[0].on('enquire_link', function(pdu) {
 					serverSessions[0].send(pdu.response());
@@ -884,6 +990,24 @@ describe('enquire_link', function() {
 			session.on('close', function() {
 				assert.ok(serverTimedOut, 'server session did not report the timeout');
 				done();
+			});
+		});
+
+		it('should keep a silent client when close_on_enquire_link_timeout is false', function(done) {
+			server.close();
+			listen({ auto_enquire_link_period: 10, enquire_link_timeout: 20, close_on_enquire_link_timeout: false }, function() {
+				var timeouts = 0;
+				var session = smpp.connect({ port: port }, function() {
+					serverSessions[0].on('enquire_link_timeout', function() {
+						if (++timeouts === 3) {
+							session.destroy(done);
+						}
+					});
+				});
+				session.on('error', function() {});
+				session.on('close', function() {
+					if (timeouts < 3) done(new Error('server dropped the client'));
+				});
 			});
 		});
 

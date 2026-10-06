@@ -277,7 +277,7 @@ export class Session extends EventEmitter {
     if (options.auto_enquire_link_period > 0) {
       this._enquireLink = {
         period: options.auto_enquire_link_period,
-        timeout: options.enquire_link_timeout || 0,
+        timeout: options.enquire_link_timeout > 0 ? options.enquire_link_timeout : 0,
       };
     }
 
@@ -435,7 +435,6 @@ export class Session extends EventEmitter {
 
   connect() {
     this.sequence = 0;
-    this.closed = false;
     this.paused = false;
     this._busy = false;
     this._callbacks = {};
@@ -558,15 +557,15 @@ export class Session extends EventEmitter {
    * milliseconds emits 'enquire_link_timeout' and, unless close_on_enquire_link_timeout is false,
    * destroys the session.
    *
-   * Replaces any previous schedule, and survives reconnects through connect(). On a client session
-   * that is not connected yet, the first enquire_link goes out one period after connecting.
+   * Replaces any previous schedule. On a client session that is not connected yet, the first
+   * enquire_link goes out one period after the TCP connection is established.
    */
-  startEnquireLink(period: number, timeout: number = this.options.enquire_link_timeout || 0): void {
+  startEnquireLink(period: number, timeout: number = this.options.enquire_link_timeout): void {
     if (!(period > 0)) {
       throw new TypeError('enquire_link period must be a positive number of milliseconds');
     }
     this._enquireLink = { period, timeout: timeout > 0 ? timeout : 0 };
-    if (!this.closed && !this.socket.connecting) {
+    if (!this.socket.destroyed && !this.socket.connecting) {
       this._startEnquireLinkInterval();
     }
   }
@@ -579,16 +578,17 @@ export class Session extends EventEmitter {
     this._stopEnquireLinkInterval();
   }
 
-  private _startEnquireLinkInterval() {
+  private _startEnquireLinkInterval(): void {
     this._stopEnquireLinkInterval();
-    if (!this._enquireLink) {
+    // Not writable: close() was already called, e.g. from a 'connect' listener.
+    if (!this._enquireLink || !this.socket.writable) {
       return;
     }
     const { period, timeout } = this._enquireLink;
     this._interval = setInterval(() => this._sendEnquireLink(timeout), period);
   }
 
-  private _stopEnquireLinkInterval() {
+  private _stopEnquireLinkInterval(): void {
     if (this._interval) {
       clearInterval(this._interval);
       this._interval = 0;
@@ -599,19 +599,14 @@ export class Session extends EventEmitter {
     this._enquireLinkTimers.clear();
   }
 
-  private _sendEnquireLink(timeout: number) {
+  private _sendEnquireLink(timeout: number): void {
     const pdu = new PDU('enquire_link');
-    let timer: NodeJS.Timeout | undefined;
-    const sent = this.send(pdu, () => {
-      if (timer) {
-        clearTimeout(timer);
-        this._enquireLinkTimers.delete(timer);
-      }
-    });
-    if (!sent || !timeout) {
+    if (!timeout) {
+      // Nothing waits for the response, so don't leave a callback behind for a peer that never answers.
+      this.send(pdu);
       return;
     }
-    timer = setTimeout(() => {
+    const timer = setTimeout(() => {
       this._enquireLinkTimers.delete(timer);
       delete this._callbacks[pdu.sequence_number];
       this.debug('enquire_link.timeout', 'no enquire_link_resp within ' + timeout + 'ms', {
@@ -620,12 +615,20 @@ export class Session extends EventEmitter {
       });
       this.emitMetric('enquire_link.timeout', 1, { pdu: pdu, timeout: timeout });
       this.emit('enquire_link_timeout', pdu as unknown as EnquireLinkPDU);
-      if (this.options.close_on_enquire_link_timeout !== false && !this.closed) {
+      if (this.options.close_on_enquire_link_timeout !== false && !this.socket.destroyed) {
         this._stopEnquireLinkInterval();
         this.destroy();
       }
     }, timeout);
-    this._enquireLinkTimers.add(timer);
+    const sent = this.send(pdu, () => {
+      clearTimeout(timer);
+      this._enquireLinkTimers.delete(timer);
+    });
+    if (sent) {
+      this._enquireLinkTimers.add(timer);
+    } else {
+      clearTimeout(timer);
+    }
   }
 
   pause() {
@@ -645,6 +648,8 @@ export class Session extends EventEmitter {
         this.socket.once('close', callback);
       }
     }
+    // The socket stops being writable, so further enquire_link could only fail.
+    this._stopEnquireLinkInterval();
     this.socket.end();
   }
 
