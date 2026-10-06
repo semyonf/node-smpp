@@ -700,6 +700,18 @@ describe('enquire_link', function() {
 		port = server.address().port;
 	}
 
+	// Connect a client and call back with the server's side of the session. The client's 'connect'
+	// can come before the server has accepted the connection (seen on macOS), so wait for both.
+	function connect(options, callback) {
+		return smpp.connect(options, function() {
+			if (serverSessions.length) {
+				callback(serverSessions[0]);
+			} else {
+				server.once('session', callback);
+			}
+		});
+	}
+
 	afterEach(function(done) {
 		server.sessions.forEach(function(session) {
 			session.destroy();
@@ -723,8 +735,8 @@ describe('enquire_link', function() {
 		});
 
 		it('should still emit the enquire_link event', function(done) {
-			var session = smpp.connect({ port: port }, function() {
-				serverSessions[0].on('enquire_link', function(pdu) {
+			var session = connect({ port: port }, function(serverSession) {
+				serverSession.on('enquire_link', function(pdu) {
 					assert.equal(pdu.command, 'enquire_link');
 					session.destroy(done);
 				});
@@ -733,8 +745,7 @@ describe('enquire_link', function() {
 		});
 
 		it('should answer before emitting the events', function(done) {
-			var session = smpp.connect({ port: port }, function() {
-				var serverSession = serverSessions[0];
+			var session = connect({ port: port }, function(serverSession) {
 				var sent = [];
 				var send = serverSession.send;
 				serverSession.send = function(pdu) {
@@ -753,8 +764,8 @@ describe('enquire_link', function() {
 		});
 
 		it('should be switchable at runtime', function(done) {
-			var session = smpp.connect({ port: port }, function() {
-				serverSessions[0].autoEnquireLinkResponse = false;
+			var session = connect({ port: port }, function(serverSession) {
+				serverSession.autoEnquireLinkResponse = false;
 				session.enquire_link(function() {
 					done(new Error('enquire_link should not have been answered'));
 				});
@@ -823,9 +834,9 @@ describe('enquire_link', function() {
 		});
 
 		it('should not keep callbacks for enquire_link when no timeout is set', function(done) {
-			var session = smpp.connect({ port: port, auto_enquire_link_period: 10 }, function() {
+			var session = connect({ port: port, auto_enquire_link_period: 10 }, function(serverSession) {
 				var received = 0;
-				serverSessions[0].on('enquire_link', function() {
+				serverSession.on('enquire_link', function() {
 					if (++received === 3) {
 						assert.deepEqual(Object.keys(session._callbacks), []);
 						session.destroy(done);
@@ -842,13 +853,13 @@ describe('enquire_link', function() {
 		});
 
 		it('should ignore a negative timeout option', function(done) {
-			var session = smpp.connect({
+			var session = connect({
 				port: port,
 				auto_enquire_link_period: 10,
 				enquire_link_timeout: -1
-			}, function() {
-				serverSessions[0].on('enquire_link', function(pdu) {
-					serverSessions[0].send(pdu.response());
+			}, function(serverSession) {
+				serverSession.on('enquire_link', function(pdu) {
+					serverSession.send(pdu.response());
 				});
 			});
 			session.on('enquire_link_timeout', function() {
@@ -861,11 +872,13 @@ describe('enquire_link', function() {
 
 		it('should start a schedule requested before the connection is established', function(done) {
 			var connected = false;
-			var session = smpp.connect({ port: port }, function() {
-				connected = true;
-				serverSessions[0].on('enquire_link', function() {
+			var session = connect({ port: port }, function(serverSession) {
+				serverSession.once('enquire_link', function() {
 					session.destroy(done);
 				});
+			});
+			session.on('connect', function() {
+				connected = true;
 			});
 			session.on('debug', function(type) {
 				if (type === 'pdu.command.out') {
@@ -877,9 +890,9 @@ describe('enquire_link', function() {
 		});
 
 		it('should ignore a negative timeout given to startEnquireLink()', function(done) {
-			var session = smpp.connect({ port: port }, function() {
-				serverSessions[0].on('enquire_link', function(pdu) {
-					serverSessions[0].send(pdu.response());
+			var session = connect({ port: port }, function(serverSession) {
+				serverSession.on('enquire_link', function(pdu) {
+					serverSession.send(pdu.response());
 				});
 				session.startEnquireLink(10, -5);
 			});
@@ -1015,8 +1028,8 @@ describe('enquire_link', function() {
 		});
 
 		it('should stop sending enquire_link once the peer closes the session', function(done) {
-			var session = smpp.connect({ port: port, auto_enquire_link_period: 10 }, function() {
-				serverSessions[0].destroy();
+			var session = connect({ port: port, auto_enquire_link_period: 10 }, function(serverSession) {
+				serverSession.destroy();
 			});
 			session.on('close', function() {
 				setTimeout(function() {
@@ -1044,13 +1057,13 @@ describe('enquire_link', function() {
 
 		it('should not time out when the peer answers', function(done) {
 			var responses = 0;
-			var session = smpp.connect({
+			var session = connect({
 				port: port,
 				auto_enquire_link_period: 20,
 				enquire_link_timeout: 200
-			}, function() {
-				serverSessions[0].on('enquire_link', function(pdu) {
-					serverSessions[0].send(pdu.response());
+			}, function(serverSession) {
+				serverSession.on('enquire_link', function(pdu) {
+					serverSession.send(pdu.response());
 				});
 			});
 			session.on('enquire_link_timeout', function() {
@@ -1067,10 +1080,10 @@ describe('enquire_link', function() {
 
 		it('should be startable and stoppable at runtime', function(done) {
 			var sent = 0;
-			var session = smpp.connect({ port: port }, function() {
-				serverSessions[0].on('enquire_link', function(pdu) {
+			var session = connect({ port: port }, function(serverSession) {
+				serverSession.on('enquire_link', function(pdu) {
 					sent++;
-					serverSessions[0].send(pdu.response());
+					serverSession.send(pdu.response());
 				});
 				session.startEnquireLink(20, 50);
 				setTimeout(function() {
@@ -1120,8 +1133,8 @@ describe('enquire_link', function() {
 
 		it('should drop a client that does not answer enquire_link', function(done) {
 			var serverTimedOut = false;
-			var session = smpp.connect({ port: port }, function() {
-				serverSessions[0].on('enquire_link_timeout', function() {
+			var session = connect({ port: port }, function(serverSession) {
+				serverSession.on('enquire_link_timeout', function() {
 					serverTimedOut = true;
 				});
 			});
@@ -1136,8 +1149,8 @@ describe('enquire_link', function() {
 			server.close();
 			listen({ auto_enquire_link_period: 10, enquire_link_timeout: 20, close_on_enquire_link_timeout: false }, function() {
 				var timeouts = 0;
-				var session = smpp.connect({ port: port }, function() {
-					serverSessions[0].on('enquire_link_timeout', function() {
+				var session = connect({ port: port }, function(serverSession) {
+					serverSession.on('enquire_link_timeout', function() {
 						if (++timeouts === 3) {
 							session.destroy(done);
 						}
