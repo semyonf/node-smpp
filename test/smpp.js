@@ -1563,3 +1563,448 @@ describe('enquire_link', function() {
 		});
 	});
 });
+
+describe('Session#connect() reconnecting', function() {
+	var net = require('net');
+	var server, port, connections;
+
+	beforeEach(function(done) {
+		connections = 0;
+		server = smpp.createServer({}, function(session) {
+			connections++;
+			session.on('error', function() {}); // the tests tear connections down abruptly
+			session.on('enquire_link', function(pdu) {
+				session.send(pdu.response());
+			});
+		});
+		server.listen(0, done);
+		port = server.address().port;
+	});
+
+	afterEach(function(done) {
+		server.sessions.forEach(function(session) {
+			session.destroy();
+		});
+		server.close(done);
+	});
+
+	// The server's side of the first connection. The client's 'connect' can come before the server has
+	// accepted the connection (seen on macOS), so it may have to be waited for.
+	function firstServerSession(callback) {
+		if (server.sessions.length) {
+			callback(server.sessions[0]);
+		} else {
+			server.once('session', callback);
+		}
+	}
+
+	// Drop the first connection from the server side, once it is up on both sides.
+	function dropFirstConnection() {
+		server.once('session', function(serverSession) {
+			setImmediate(function() {
+				serverSession.destroy();
+			});
+		});
+	}
+
+	it('should receive PDUs again after reconnecting from the close event', function(done) {
+		var session = smpp.connect({ port: port });
+		session.once('connect', function() {
+			// Some traffic on the first connection, so that its counters are not at zero.
+			session.enquire_link(function() {
+				firstServerSession(function(serverSession) {
+					serverSession.destroy();
+				});
+			});
+		});
+		var closes = 0;
+		var bytesIn = 0;
+		session.on('debug', function(type, msg, payload) {
+			if (type === 'socket.data.in') bytesIn += payload.bytes;
+		});
+		session.on('close', function() {
+			if (++closes > 1) return;
+			bytesIn = 0;
+			assert.equal(session.closed, true);
+			session.connect();
+			assert.equal(session.closed, false);
+			session.once('connect', function() {
+				session.enquire_link(function(pdu) {
+					assert.equal(pdu.command, 'enquire_link_resp');
+					assert.equal(pdu.sequence_number, 1, 'sequence numbers did not start over');
+					assert.equal(bytesIn, 16, 'socket.data.in did not count the bytes of the new connection');
+					assert.equal(connections, 2);
+					session.close(function() {
+						assert.equal(closes, 2);
+						done();
+					});
+				});
+			});
+		});
+	});
+
+	it('should reconnect from the error event and ignore the events of the failed connection', function(done) {
+		// Find a port nobody listens on, fail to connect to it, then start listening there.
+		var probe = net.createServer();
+		probe.listen(0, function() {
+			var freePort = probe.address().port;
+			probe.close(function() {
+				var session = smpp.connect({ port: freePort });
+				var errors = 0, closes = 0, other;
+				session.on('close', function() {
+					closes++;
+				});
+				session.on('error', function(e) {
+					errors++;
+					assert.equal(e.code, 'ECONNREFUSED');
+					other = smpp.createServer({}, function(serverSession) {
+						serverSession.on('error', function() {});
+						serverSession.on('enquire_link', function(pdu) {
+							serverSession.send(pdu.response());
+						});
+					});
+					other.listen(freePort, function() {
+						session.connect();
+						session.once('connect', function() {
+							// The failed connection's 'close' has had its turn by now.
+							setTimeout(function() {
+								assert.equal(errors, 1);
+								assert.equal(closes, 0, "the failed connection's 'close' was emitted");
+								assert.equal(session.closed, false);
+								session.enquire_link(function() {
+									session.close(function() {
+										assert.equal(closes, 1);
+										other.close(done);
+									});
+								});
+							}, 20);
+						});
+					});
+				});
+			});
+		});
+	});
+
+	it('should replace a connection that is still open, without its close or error events', function(done) {
+		var session = smpp.connect({ port: port });
+		session.once('connect', function() {
+			firstServerSession(function(first) {
+				session.on('close', function() {
+					done(new Error("the replaced connection's 'close' was emitted"));
+				});
+				session.on('error', function(e) {
+					done(e);
+				});
+				session.connect();
+				first.on('close', function() {
+					session.enquire_link(function() {
+						assert.equal(connections, 2);
+						session.removeAllListeners('close');
+						session.destroy(done);
+					});
+				});
+			});
+		});
+	});
+
+	it('should ignore an error of the replaced connection', function(done) {
+		var session = smpp.connect({ port: port });
+		session.once('connect', function() {
+			var previous = session.socket;
+			var connects = 0;
+			session.connect();
+			session.on('connect', function() {
+				connects++;
+			});
+			session.on('secureConnect', function() {
+				done(new Error("the replaced connection's secureConnect was emitted"));
+			});
+			session.on('close', function() {
+				done(new Error("the replaced connection's close was emitted"));
+			});
+			session.on('error', function() {
+				done(new Error("the replaced connection's error was emitted"));
+			});
+			previous.emit('error', new Error('late error of the previous connection'));
+			previous.emit('connect');
+			previous.emit('secureConnect');
+			previous.emit('readable');
+			previous.emit('close');
+			assert.equal(connects, 0);
+			assert.equal(session.closed, false);
+			session.enquire_link(function() {
+				assert.equal(connects, 1);
+				session.removeAllListeners('close');
+				session.destroy(done);
+			});
+		});
+	});
+
+	it('should forget the enquire_link awaited on the replaced connection', function(done) {
+		var session = smpp.connect({ port: port, enquire_link_timeout: 1000 });
+		session.once('connect', function() {
+			// The server answers, but not before the connection is replaced.
+			session.startEnquireLink(1);
+			session.once('send', function() {
+				assert.equal(session._enquireLinkTimers.size, 1);
+				session.connect();
+				assert.equal(session._enquireLinkTimers.size, 0);
+				assert.equal(session._interval, 0);
+				session.destroy(done);
+			});
+		});
+	});
+
+	it('should not let a write failing on the replaced connection drop a callback of the new one', function(done) {
+		var session = smpp.connect({ port: port });
+		var failures = 0;
+		// Queued while connecting; it fails when connect() destroys that socket.
+		session.enquire_link({}, function() {
+			done(new Error('the replaced connection delivered a response'));
+		}, null, function() {
+			failures++;
+		});
+		session.connect();
+		// The same sequence number, 1, on the new connection.
+		session.enquire_link(function(pdu) {
+			assert.equal(pdu.sequence_number, 1);
+			setTimeout(function() {
+				assert.equal(failures, 1, 'the write on the replaced connection did not fail');
+				session.destroy(done);
+			}, 20);
+		});
+	});
+
+	it('should leave the session untouched when the options are rejected', function(done) {
+		var session = smpp.connect({ port: port });
+		session.once('connect', function() {
+			session.options.port = 99999;
+			assert.throws(function() {
+				session.connect();
+			}, /port/i);
+			session.options.port = port;
+			assert.equal(session.closed, false);
+			session.enquire_link(function() {
+				assert.equal(connections, 1);
+				session.destroy(done);
+			});
+		});
+	});
+
+	it('should replace a connection that is still being established', function(done) {
+		var session = smpp.connect({ port: port });
+		session.on('error', done);
+		session.connect();
+		session.on('connect', function() {
+			session.enquire_link(function() {
+				session.destroy(done);
+			});
+		});
+	});
+
+	it('should discard a PDU the previous connection delivered only partly', function(done) {
+		var enquireLink = new smpp.PDU('enquire_link', { sequence_number: 42 }).toBuffer();
+		var sockets = [];
+		var raw = net.createServer(function(socket) {
+			sockets.push(socket);
+			socket.on('error', function() {});
+			if (sockets.length === 1) {
+				// The length and part of the header; the rest never comes.
+				socket.write(enquireLink.slice(0, 10));
+			} else {
+				socket.write(enquireLink);
+			}
+		});
+		raw.listen(0, function() {
+			var session = smpp.connect({ port: raw.address().port });
+			session.on('error', done);
+			session.on('debug', function(type) {
+				if (type === 'socket.data.in' && sockets.length === 1) {
+					setImmediate(function() {
+						assert.ok(session._command_length, 'the partial PDU was not pending');
+						session.connect();
+					});
+				}
+			});
+			session.on('enquire_link', function(pdu) {
+				assert.equal(pdu.sequence_number, 42);
+				session.destroy(function() {
+					sockets.forEach(function(socket) {
+						socket.destroy();
+					});
+					raw.close(function() {
+						done();
+					});
+				});
+			});
+		});
+	});
+
+	it('should reconnect a secure session', function(done) {
+		var secureServer = smpp.createServer({
+			key: fs.readFileSync(__dirname + '/fixtures/server.key'),
+			cert: fs.readFileSync(__dirname + '/fixtures/server.crt')
+		}, function(serverSession) {
+			serverSession.on('error', function() {});
+			serverSession.on('enquire_link', function(pdu) {
+				serverSession.send(pdu.response());
+			});
+		});
+		secureServer.listen(0, function() {
+			var secureConnects = 0;
+			secureServer.once('session', function(serverSession) {
+				setImmediate(function() {
+					serverSession.destroy();
+				});
+			});
+			var session = smpp.connect({ port: secureServer.address().port, tls: true });
+			session.on('secureConnect', function() {
+				if (++secureConnects === 1) {
+					return;
+				}
+				session.enquire_link(function(pdu) {
+					assert.equal(pdu.command, 'enquire_link_resp');
+					session.destroy(function() {
+						secureServer.close(done);
+					});
+				});
+			});
+			session.once('close', function() {
+				session.connect();
+			});
+		});
+	});
+
+	it('should restart the enquire_link schedule on the new connection', function(done) {
+		dropFirstConnection();
+		var session = smpp.connect({ port: port, auto_enquire_link_period: 10, enquire_link_timeout: 200 });
+		session.on('enquire_link_timeout', function() {
+			done(new Error('enquire_link timed out'));
+		});
+		session.once('close', function() {
+			assert.equal(session._interval, 0);
+			session.connect();
+			var responses = 0;
+			session.on('enquire_link_resp', function() {
+				if (++responses === 3) {
+					session.destroy(done);
+				}
+			});
+		});
+	});
+
+	it('should arm the connect timeout again', function(done) {
+		dropFirstConnection();
+		var session = smpp.connect({ port: port });
+		session.once('close', function() {
+			// A host name that never resolves, so only the connect timeout ends the attempt.
+			session.options.host = 'example.invalid';
+			session.options.lookup = function() {};
+			session.options.connectTimeout = 25;
+			session.connect();
+			session.on('error', function(e) {
+				assert.equal(e.code, 'ETIMEOUT');
+				done();
+			});
+		});
+	});
+
+	it('should fail requests with a response_timeout that the replaced connection was waiting on', function(done) {
+		var session = smpp.connect({ port: port, response_timeout: 1000 });
+		session.once('connect', function() {
+			// Nothing answers a submit_sm on this server.
+			var failures = [];
+			session.on('close', function() {
+				done(new Error("the replaced connection's 'close' was emitted"));
+			});
+			session.submit_sm({ destination_addr: '123' }, function() {
+				done(new Error('unexpected response'));
+			}, null, function(pdu, err) {
+				failures.push(err.code);
+			});
+			session.connect();
+			assert.deepEqual(failures, ['ESESSIONCLOSED'], 'not failed before connect() returned');
+			session.once('connect', function() {
+				setTimeout(function() {
+					assert.deepEqual(failures, ['ESESSIONCLOSED']);
+					session.removeAllListeners('close');
+					session.destroy(done);
+				}, 20);
+			});
+		});
+	});
+
+	it('should not emit close for a connection a failure callback has already replaced', function(done) {
+		var session = smpp.connect({ port: port, response_timeout: 1000 });
+		var failures = 0;
+		session.on('error', function() {}); // the server resets the first connection
+		session.on('close', function() {
+			done(new Error("'close' was emitted after the failure callback reconnected"));
+		});
+		session.once('connect', function() {
+			session.submit_sm({ destination_addr: '123' }, function() {
+				done(new Error('unexpected response'));
+			}, function() {
+				firstServerSession(function(serverSession) {
+					serverSession.destroy();
+				});
+			}, function(pdu, err) {
+				failures++;
+				assert.equal(err.code, 'ESESSIONCLOSED');
+				session.connect();
+				session.once('connect', function() {
+					session.enquire_link(function() {
+						assert.equal(failures, 1);
+						session.removeAllListeners('close');
+						session.destroy(done);
+					});
+				});
+			});
+		});
+	});
+
+	it('should keep a connection opened from the enquire_link_timeout listener', function(done) {
+		var sockets = [];
+		var deadPeer = net.createServer(function(socket) {
+			sockets.push(socket);
+		});
+		deadPeer.listen(0, function() {
+			var connects = 0;
+			var session = smpp.connect({
+				port: deadPeer.address().port,
+				auto_enquire_link_period: 10,
+				enquire_link_timeout: 30
+			});
+			session.on('connect', function() {
+				connects++;
+			});
+			session.on('close', function() {
+				done(new Error('the new connection was closed'));
+			});
+			session.once('enquire_link_timeout', function() {
+				session.options.port = port;
+				session.connect();
+				session.once('enquire_link_resp', function() {
+					assert.equal(connects, 2);
+					session.removeAllListeners('close');
+					sockets.forEach(function(socket) {
+						socket.destroy();
+					});
+					session.destroy(function() {
+						deadPeer.close(done);
+					});
+				});
+			});
+		});
+	});
+
+	it('should refuse to connect a server session', function(done) {
+		var session = smpp.connect({ port: port });
+		server.once('session', function(serverSession) {
+			assert.throws(function() {
+				serverSession.connect();
+			}, /client session/);
+			session.destroy(done);
+		});
+	});
+});
