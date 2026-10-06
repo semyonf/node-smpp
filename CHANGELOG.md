@@ -1,5 +1,11 @@
 # @semyonf/smpp
 
+## 1.7.1
+
+### Patch Changes
+
+- fab0e1b: Fix typos in the README.
+
 ## 1.7.0
 
 ### Minor Changes
