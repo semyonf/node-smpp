@@ -248,30 +248,47 @@ Responses are only read while the session is not paused, so keep `session.pause(
 
 SMPP expects every `unbind` to be answered with `unbind_resp`. With `auto_unbind_response: true`
 (a `smpp.connect()` or `smpp.createServer()` option, default `false`), the session answers an
-incoming `unbind` with an `unbind_resp` of status `ESME_ROK` and then ends the connection, so that a
-peer which never closes its side after unbinding does not leave an unbound connection open. The
-`'pdu'` and `'unbind'` events are still emitted, after the response was written. As with
-`auto_enquire_link_response`, don't also answer from your own `unbind` handler, or the peer gets two
-responses. Can be changed at runtime through `session.autoUnbindResponse`.
+incoming `unbind` with an `unbind_resp` of status `ESME_ROK`, stops its `enquire_link` schedule and
+closes the connection: the socket is ended, and destroyed as soon as the `unbind_resp` has been
+flushed, so a `'close'` event follows even if the peer never closes its side. The `'pdu'` and
+`'unbind'` events are still emitted, after the response was handed to the socket. By then the
+connection is already ending, so anything your `unbind` listener sends, including an `unbind_resp`
+of its own, fails with `send()` returning `false`, and so do responses to earlier requests that
+are still being processed. Pdus that followed the `unbind` in the same chunk are still emitted. The
+option is off by default so that handlers which already answer `unbind` keep working as they are.
+Can be changed at runtime through `session.autoUnbindResponse`.
 
 ### Exceptions in listeners
 
-An exception thrown by a listener or callback while the session handles a pdu never affects the
-session: it keeps reading, the remaining pdus of the chunk are delivered, and a `'send'` listener
-that throws does not skip the `sendCallback`. The exception is emitted as a `'listener_error'`
-event instead:
+An exception thrown by one of your listeners or callbacks never unwinds the session's own code:
+the session keeps reading, the remaining pdus of the chunk are delivered, a `'send'` listener that
+throws does not skip the `sendCallback`, a throwing `failureCallback` does not keep the other
+pending requests from failing or the `'close'` event from being emitted, and so on. This covers
+every event the session emits (`'pdu'`, the command events, `'outgoing'`, `'send'`, `'connect'`,
+`'secureConnect'`, `'close'`, `'error'`, `'response_timeout'`, `'response_aborted'`,
+`'enquire_link_timeout'`, `'debug'`, `'metrics'`), the `debugListener` option, and the
+`responseCallback`, `sendCallback` and `failureCallback` of `send()`. The exception is emitted as a
+`'listener_error'` event instead:
 
 ``` javascript
 session.on('listener_error', function(report) {
-	console.error('listener for', report.event, 'failed on', report.pdu.command, report.error);
+	console.error('listener for', report.event, 'failed', report.pdu ? 'on ' + report.pdu.command : '', report.error);
 });
 ```
 
-`report.event` is the event whose listener threw (`'pdu'`, the command name, `'outgoing'`,
-`'send'`, `'debug'` or `'metrics'`) or the `send()` callback that threw (`'responseCallback'`,
-`'sendCallback'` or `'failureCallback'`), and `report.pdu` the pdu that was being handled. Without
-a `'listener_error'` listener the exception is rethrown asynchronously, so it still ends up as an
-uncaught exception, as it did before, only without breaking the session.
+`report.event` is the event whose listener threw, or the `send()` callback that threw
+(`'responseCallback'`, `'sendCallback'` or `'failureCallback'`), and `report.pdu` the pdu that was
+being handled, or `null` for an event that is not about one. Without a `'listener_error'` listener
+the exception is rethrown on the next tick, so it still ends up as an uncaught exception (which
+kills the process unless you handle `'uncaughtException'`), with these differences from before: it
+is no longer thrown out of the `send()` or `resume()` call that triggered the listener, so it cannot
+be caught around them, the rest of the chunk is handled first, and a chunk can produce several
+uncaught exceptions. The `'error'` event without a listener is rethrown the same way instead of
+throwing synchronously from inside the socket handler.
+
+Two things are not covered: the other listeners of the same event are still skipped once one of
+them throws, as with any `EventEmitter`, and a rejected promise returned by an `async` listener is
+not an exception, so it is reported nowhere.
 
 ### Proxy protocol
 
@@ -416,11 +433,14 @@ Whether incoming `unbind` are answered automatically, closing the connection aft
 be changed at any time.
 
 #### session.remoteAddress, session.remotePort, session.localAddress, session.localPort
-The addresses of both ends of the connection, as a string and a number, or `null` before the
-connection is established (on a client session, they are set when `'connect'` is emitted). Unlike
-the socket's own properties they are kept after the connection has closed, so they can still be
-logged from a `'close'` listener. On a TLS or proxy-protocol session they are those of the
-underlying TCP connection.
+The addresses of both ends of the connection, as a string and a number, or `null` until the first
+connection is established (on a client session, they are set when `'connect'` is emitted; across
+`session.connect()` the previous connection's values are kept until the new one is established).
+They are kept after the connection has closed, when the socket itself has forgotten its
+`localAddress`/`localPort`, so they can still be logged from a `'close'` listener. On a TLS session
+they are those of the TCP connection. On a proxy-protocol session `remoteAddress`/`remotePort` are
+the client's address from the PROXY header, while `localAddress`/`localPort` are those of the TCP
+connection from the proxy.
 
 #### session.getPeerCertificate([detailed])
 Returns the certificate presented by the TLS peer, as returned by node's
@@ -461,24 +481,30 @@ a secure connection has successfully completed.
 Emitted when the connection is fully closed.
 
 #### Event: 'error' `(error)`
-Emitted when an error occurs. The `'close'` event will be called directly
-following this event.
+Emitted when an error occurs: a socket error, or a pdu that cannot be parsed (for instance one
+longer than `smpp.PDU.maxLength`), after which the rest of the stream cannot be trusted and the
+connection is destroyed. The `'close'` event will be called directly following this event. Without
+an `'error'` listener the error is rethrown on the next tick, see
+[Exceptions in listeners](#exceptions-in-listeners).
 
 #### Event: 'outgoing' `(pdu)`
-Emitted synchronously from `session.send()` (and the shortcut methods) for every pdu that is
-written to the socket, right before the write: requests and responses, including the `enquire_link`
-sent by `auto_enquire_link_period` and the responses sent by `auto_enquire_link_response` and
-`auto_unbind_response`. For a request, `pdu.sequence_number` is already assigned, and the event
-always comes before the `'pdu'` event of its response, which `'send'` does not guarantee. Not
-emitted when the socket is not writable, in which case `send()` returns `false`.
+Emitted synchronously from `session.send()` (and the shortcut methods) for every pdu handed to the
+socket, right after `socket.write()` was called: requests and responses, including the
+`enquire_link` sent by `auto_enquire_link_period` and the responses sent by
+`auto_enquire_link_response` and `auto_unbind_response`. For a request, `pdu.sequence_number` is
+already assigned, and the event always comes before the `'pdu'` event of its response, which
+`'send'` does not guarantee. The pdu has been encoded at this point (`short_message` is a Buffer,
+`data_coding` is set), like in `'send'`, and modifying it has no effect on what is sent. Not emitted
+when `send()` returns `false` (socket not writable) or throws (pdu that cannot be encoded). The
+write can still fail afterwards: `'send'` or the `failureCallback` tell the outcome.
 
 #### Event: 'send' `(pdu)`
-Emitted once a pdu has been flushed to the socket, from the write callback. Because that is
-asynchronous, the response to a request can be received, and its `'pdu'` event emitted, before the
-request's `'send'` event: use `'outgoing'` to see a request before its response.
+Emitted once a pdu has been flushed to the socket, from the write callback. Node does not guarantee
+that the write callback runs before the response is read, so the `'pdu'` event of the response can
+come before the request's `'send'`: use `'outgoing'` to see a request before its response.
 
 #### Event: 'listener_error' `({ error, event, pdu })`
-Emitted when one of your listeners or callbacks threw while the session was handling `pdu`. See
+Emitted when one of your listeners or callbacks threw. See
 [Exceptions in listeners](#exceptions-in-listeners).
 
 #### Event: 'pdu' `(pdu)`
