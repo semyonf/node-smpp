@@ -469,6 +469,23 @@ export type AnyPDU =
 // ========== Session Event Map ==========
 
 /**
+ * Payload of the 'listener_error' event: an exception thrown by one of your listeners or callbacks
+ * while the session was handling a pdu.
+ */
+export interface ListenerError {
+  /** What the listener or callback threw */
+  error: unknown;
+  /**
+   * The event whose listener threw ('pdu', the command name, 'outgoing', 'send', 'debug' or
+   * 'metrics'), or the send() callback that threw ('responseCallback', 'sendCallback' or
+   * 'failureCallback')
+   */
+  event: string;
+  /** The pdu that was being handled */
+  pdu: AnyPDU;
+}
+
+/**
  * Maps session event names to their callback argument types.
  * Used for type-safe event handling on Session instances.
  */
@@ -514,7 +531,11 @@ export type SessionEventMap = {
   close: void;
   error: Error;
   pdu: AnyPDU;
+  /** A pdu is about to be written to the socket; emitted synchronously from send() */
+  outgoing: AnyPDU;
   send: AnyPDU;
+  /** A listener or callback threw while the session was handling a pdu */
+  listener_error: ListenerError;
   /** The request pdu whose response did not arrive within response_timeout */
   response_timeout: AnyPDU;
   /** The request pdu that was still waiting for its response when the session closed */

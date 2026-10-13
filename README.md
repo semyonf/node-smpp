@@ -244,6 +244,35 @@ Responses are only read while the session is not paused, so keep `session.pause(
 `enquire_link_timeout`, or the link is considered dead. A paused session doesn't answer incoming
 `enquire_link` automatically either, so the peer's own timeout applies as well.
 
+### Answering unbind
+
+SMPP expects every `unbind` to be answered with `unbind_resp`. With `auto_unbind_response: true`
+(a `smpp.connect()` or `smpp.createServer()` option, default `false`), the session answers an
+incoming `unbind` with an `unbind_resp` of status `ESME_ROK` and then ends the connection, so that a
+peer which never closes its side after unbinding does not leave an unbound connection open. The
+`'pdu'` and `'unbind'` events are still emitted, after the response was written. As with
+`auto_enquire_link_response`, don't also answer from your own `unbind` handler, or the peer gets two
+responses. Can be changed at runtime through `session.autoUnbindResponse`.
+
+### Exceptions in listeners
+
+An exception thrown by a listener or callback while the session handles a pdu never affects the
+session: it keeps reading, the remaining pdus of the chunk are delivered, and a `'send'` listener
+that throws does not skip the `sendCallback`. The exception is emitted as a `'listener_error'`
+event instead:
+
+``` javascript
+session.on('listener_error', function(report) {
+	console.error('listener for', report.event, 'failed on', report.pdu.command, report.error);
+});
+```
+
+`report.event` is the event whose listener threw (`'pdu'`, the command name, `'outgoing'`,
+`'send'`, `'debug'` or `'metrics'`) or the `send()` callback that threw (`'responseCallback'`,
+`'sendCallback'` or `'failureCallback'`), and `report.pdu` the pdu that was being handled. Without
+a `'listener_error'` listener the exception is rethrown asynchronously, so it still ends up as an
+uncaught exception, as it did before, only without breaking the session.
+
 ### Proxy protocol
 
 [Proxy Protocol v1](https://www.haproxy.org/download/1.8/doc/proxy-protocol.txt) is now
@@ -381,6 +410,18 @@ the connection, the timeout destroys the session (unless `close_on_enquire_link_
 Whether incoming `enquire_link` are answered automatically. Initialized from the
 `auto_enquire_link_response` option and can be changed at any time.
 
+#### session.autoUnbindResponse
+Whether incoming `unbind` are answered automatically, closing the connection afterwards (see
+[Answering unbind](#answering-unbind)). Initialized from the `auto_unbind_response` option and can
+be changed at any time.
+
+#### session.remoteAddress, session.remotePort, session.localAddress, session.localPort
+The addresses of both ends of the connection, as a string and a number, or `null` before the
+connection is established (on a client session, they are set when `'connect'` is emitted). Unlike
+the socket's own properties they are kept after the connection has closed, so they can still be
+logged from a `'close'` listener. On a TLS or proxy-protocol session they are those of the
+underlying TCP connection.
+
 #### session.getPeerCertificate([detailed])
 Returns the certificate presented by the TLS peer, as returned by node's
 [`tls.TLSSocket.getPeerCertificate()`](https://nodejs.org/api/tls.html#tlssocketgetpeercertificatedetailed).
@@ -423,8 +464,22 @@ Emitted when the connection is fully closed.
 Emitted when an error occurs. The `'close'` event will be called directly
 following this event.
 
+#### Event: 'outgoing' `(pdu)`
+Emitted synchronously from `session.send()` (and the shortcut methods) for every pdu that is
+written to the socket, right before the write: requests and responses, including the `enquire_link`
+sent by `auto_enquire_link_period` and the responses sent by `auto_enquire_link_response` and
+`auto_unbind_response`. For a request, `pdu.sequence_number` is already assigned, and the event
+always comes before the `'pdu'` event of its response, which `'send'` does not guarantee. Not
+emitted when the socket is not writable, in which case `send()` returns `false`.
+
 #### Event: 'send' `(pdu)`
-Emitted when a pdu is being sent over the session with the pdu as the argument.
+Emitted once a pdu has been flushed to the socket, from the write callback. Because that is
+asynchronous, the response to a request can be received, and its `'pdu'` event emitted, before the
+request's `'send'` event: use `'outgoing'` to see a request before its response.
+
+#### Event: 'listener_error' `({ error, event, pdu })`
+Emitted when one of your listeners or callbacks threw while the session was handling `pdu`. See
+[Exceptions in listeners](#exceptions-in-listeners).
 
 #### Event: 'pdu' `(pdu)`
 Emitted upon receiving a pdu.
@@ -456,8 +511,8 @@ as a listener for the 'session' event.
 If options include `key` and `cert`, a TLS secured server will be created.
 Include `rejectUnauthorized: false` to disable the certificate validation.
 The `enquire_link` options described in
-[Keeping the link alive](#keeping-the-link-alive-enquire_link) apply to every session the server
-accepts.
+[Keeping the link alive](#keeping-the-link-alive-enquire_link) and `auto_unbind_response` (see
+[Answering unbind](#answering-unbind)) apply to every session the server accepts.
 
 ### smpp.Server
 The base object for a SMPP server created with `smpp.createServer()`.

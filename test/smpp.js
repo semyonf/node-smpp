@@ -2008,3 +2008,613 @@ describe('Session#connect() reconnecting', function() {
 		});
 	});
 });
+
+describe("Event: 'outgoing'", function() {
+	var server, port, serverSessions;
+
+	function listen(options, done) {
+		serverSessions = [];
+		server = smpp.createServer(options, function(session) {
+			session.on('error', function() {});
+			session.on('submit_sm', function(pdu) {
+				session.send(pdu.response());
+			});
+			serverSessions.push(session);
+		});
+		server.listen(0, done);
+		port = server.address().port;
+	}
+
+	// Connect a client and call back with the server's side of the session (see 'enquire_link').
+	function connect(options, callback) {
+		options.port = port;
+		return smpp.connect(options, function() {
+			if (serverSessions.length) {
+				callback(serverSessions[0]);
+			} else {
+				server.once('session', callback);
+			}
+		});
+	}
+
+	beforeEach(function(done) {
+		listen({ auto_enquire_link_response: true }, done);
+	});
+
+	afterEach(function(done) {
+		server.sessions.forEach(function(session) {
+			session.destroy();
+		});
+		server.close(done);
+	});
+
+	it('should be emitted synchronously from send(), once the sequence_number is assigned', function(done) {
+		var session = connect({}, function() {
+			var outgoing = [];
+			session.on('outgoing', function(pdu) {
+				outgoing.push(pdu);
+			});
+			var pdu = new smpp.PDU('submit_sm', { destination_addr: '1' });
+			assert.strictEqual(session.send(pdu), true);
+			assert.strictEqual(outgoing.length, 1, 'outgoing was not emitted before send() returned');
+			assert.strictEqual(outgoing[0], pdu);
+			assert.strictEqual(pdu.sequence_number, 1);
+			session.destroy(done);
+		});
+	});
+
+	it('should come before the pdu event of the response, also when several responses arrive in one chunk', function(done) {
+		var session = connect({}, function() {
+			var events = [];
+			session.on('outgoing', function(pdu) {
+				events.push('outgoing:' + pdu.sequence_number);
+			});
+			session.on('pdu', function(pdu) {
+				events.push('pdu:' + pdu.sequence_number);
+				if (pdu.sequence_number < 3) return;
+				// The three requests went out back to back, so their responses typically share a
+				// chunk, and the write callbacks (the 'send' events) may well run after it was read.
+				// Whatever the chunking, every outgoing precedes the pdu of its response.
+				for (var i = 1; i <= 3; i++) {
+					var sent = events.indexOf('outgoing:' + i), answered = events.indexOf('pdu:' + i);
+					assert.ok(sent >= 0 && answered > sent, 'wrong order: ' + events.join(' '));
+				}
+				session.destroy(done);
+			});
+			for (var i = 0; i < 3; i++) {
+				session.submit_sm({ destination_addr: '1' });
+			}
+			assert.deepEqual(events, ['outgoing:1', 'outgoing:2', 'outgoing:3']);
+		});
+	});
+
+	it('should be emitted for responses, before their send event', function(done) {
+		var session = connect({}, function(serverSession) {
+			var events = [];
+			serverSession.on('outgoing', function(pdu) {
+				events.push('outgoing:' + pdu.command + ':' + pdu.sequence_number);
+			});
+			serverSession.on('send', function(pdu) {
+				events.push('send:' + pdu.command + ':' + pdu.sequence_number);
+				assert.deepEqual(events, ['outgoing:submit_sm_resp:1', 'send:submit_sm_resp:1']);
+				session.destroy(done);
+			});
+			session.submit_sm({ destination_addr: '1' });
+		});
+	});
+
+	it('should be emitted for the automatic enquire_link and enquire_link_resp', function(done) {
+		var session = connect({ auto_enquire_link_period: 10 }, function(serverSession) {
+			var clientOutgoing = [], serverOutgoing = [];
+			session.on('outgoing', function(pdu) {
+				clientOutgoing.push(pdu.command);
+			});
+			serverSession.on('outgoing', function(pdu) {
+				serverOutgoing.push(pdu.command);
+			});
+			serverSession.on('enquire_link', function() {
+				// The automatic response is sent before the events of the enquire_link are emitted.
+				assert.deepEqual(serverOutgoing, ['enquire_link_resp']);
+			});
+			session.on('enquire_link_resp', function() {
+				assert.deepEqual(clientOutgoing, ['enquire_link']);
+				session.destroy(done);
+			});
+		});
+	});
+
+	it('should not be emitted when the socket is not writable', function(done) {
+		var session = connect({}, function() {
+			session.on('outgoing', function() {
+				done(new Error('outgoing was emitted for a pdu that was not written'));
+			});
+			session.socket.writable = false;
+			assert.strictEqual(session.submit_sm({ destination_addr: '1' }), false);
+			session.destroy(done);
+		});
+	});
+});
+
+describe('Session addresses', function() {
+	var fs = require('fs');
+	var server, port, secure = {};
+
+	beforeEach(function(done) {
+		server = smpp.createServer({}, function(session) {
+			session.on('error', function() {});
+		});
+		server.listen(0, done);
+		port = server.address().port;
+	});
+
+	beforeEach(function(done) {
+		secure.server = smpp.createServer({
+			key: fs.readFileSync(__dirname + '/fixtures/server.key'),
+			cert: fs.readFileSync(__dirname + '/fixtures/server.crt')
+		}, function(session) {
+			session.on('error', function() {});
+		});
+		secure.server.listen(0, done);
+		secure.port = secure.server.address().port;
+	});
+
+	afterEach(function(done) {
+		server.sessions.forEach(function(session) {
+			session.destroy();
+		});
+		server.close(done);
+	});
+
+	afterEach(function(done) {
+		secure.server.sessions.forEach(function(session) {
+			session.destroy();
+		});
+		secure.server.close(done);
+	});
+
+	// Checks the addresses of a connected session against its socket, then that they survive the
+	// close, after which the socket itself has forgotten them.
+	function checkAddresses(session, expected, done) {
+		var socket = session.rootSocket();
+		assert.equal(typeof socket.localAddress, 'string', 'the socket has no localAddress yet');
+		var snapshot = {
+			localAddress: session.localAddress,
+			localPort: session.localPort,
+			remoteAddress: session.remoteAddress,
+			remotePort: session.remotePort
+		};
+		assert.deepStrictEqual(snapshot, {
+			localAddress: socket.localAddress,
+			localPort: socket.localPort,
+			remoteAddress: socket.remoteAddress,
+			remotePort: socket.remotePort
+		});
+		assert.strictEqual(session.localPort, expected.localPort);
+		assert.strictEqual(session.remotePort, expected.remotePort);
+		session.on('close', function() {
+			assert.strictEqual(socket.localAddress, undefined, 'the closed socket still knows its address');
+			assert.deepStrictEqual({
+				localAddress: session.localAddress,
+				localPort: session.localPort,
+				remoteAddress: session.remoteAddress,
+				remotePort: session.remotePort
+			}, snapshot);
+			done();
+		});
+		session.destroy();
+	}
+
+	// The port of the client's end, as the server sees it.
+	function clientPort(session) {
+		return session.rootSocket().localPort;
+	}
+
+	it('should expose the local and remote address of a client session', function(done) {
+		var session = smpp.connect({ port: port }, function() {
+			assert.equal(typeof session.remotePort, 'number');
+			checkAddresses(session, { localPort: clientPort(session), remotePort: port }, done);
+		});
+	});
+
+	it('should expose the local and remote address of a TLS client session', function(done) {
+		var session = smpp.connect({ port: secure.port, tls: true }, function() {
+			checkAddresses(session, { localPort: clientPort(session), remotePort: secure.port }, done);
+		});
+	});
+
+	it('should expose the local and remote address of a server session', function(done) {
+		var client = smpp.connect({ port: port });
+		client.on('error', function() {});
+		server.once('session', function(session) {
+			checkAddresses(session, { localPort: port, remotePort: clientPort(client) }, done);
+		});
+	});
+
+	it('should expose the local and remote address of a TLS server session', function(done) {
+		var client = smpp.connect({ port: secure.port, tls: true });
+		client.on('error', function() {});
+		secure.server.once('session', function(session) {
+			checkAddresses(session, { localPort: secure.port, remotePort: clientPort(client) }, done);
+		});
+	});
+});
+
+describe('auto_unbind_response', function() {
+	var server, port, serverSessions;
+
+	function listen(options, done) {
+		serverSessions = [];
+		server = smpp.createServer(options, function(session) {
+			session.on('error', function() {});
+			serverSessions.push(session);
+		});
+		server.listen(0, done);
+		port = server.address().port;
+	}
+
+	function connect(options, callback) {
+		options.port = port;
+		return smpp.connect(options, function() {
+			if (serverSessions.length) {
+				callback(serverSessions[0]);
+			} else {
+				server.once('session', callback);
+			}
+		});
+	}
+
+	afterEach(function(done) {
+		server.sessions.forEach(function(session) {
+			session.destroy();
+		});
+		server.close(done);
+	});
+
+	describe('when enabled', function() {
+		beforeEach(function(done) {
+			listen({ auto_unbind_response: true }, done);
+		});
+
+		it('should answer an incoming unbind exactly once, emit its events and close', function(done) {
+			var session = connect({}, function(serverSession) {
+				var outgoing = [], events = [], responses = [];
+				serverSession.on('outgoing', function(pdu) {
+					outgoing.push(pdu);
+				});
+				serverSession.on('pdu', function(pdu) {
+					events.push('pdu:' + pdu.command);
+				});
+				serverSession.on('unbind', function(pdu) {
+					events.push('unbind');
+				});
+				session.on('unbind_resp', function(pdu) {
+					responses.push(pdu);
+				});
+				// The server ends the connection: the client receives the unbind_resp, then the FIN,
+				// and closes too. Checked once both sides are closed.
+				var closed = 0;
+				session.on('close', function() {
+					if (++closed === 2) check();
+				});
+				serverSession.on('close', function() {
+					events.push('close');
+					if (++closed === 2) check();
+				});
+				function check() {
+					assert.deepEqual(events, ['pdu:unbind', 'unbind', 'close']);
+					assert.equal(outgoing.length, 1, 'expected exactly one outgoing pdu');
+					assert.equal(outgoing[0].command, 'unbind_resp');
+					assert.equal(outgoing[0].command_status, smpp.ESME_ROK);
+					assert.equal(outgoing[0].sequence_number, 1);
+					assert.equal(responses.length, 1, 'expected exactly one unbind_resp');
+					done();
+				}
+				session.unbind(function(pdu) {
+					assert.equal(pdu.command, 'unbind_resp');
+					assert.equal(pdu.command_status, smpp.ESME_ROK);
+				});
+			});
+		});
+
+		it('should answer before emitting the events', function(done) {
+			var session = connect({}, function(serverSession) {
+				var sent = [];
+				var send = serverSession.send;
+				serverSession.send = function(pdu) {
+					sent.push(pdu.command);
+					return send.apply(this, arguments);
+				};
+				serverSession.on('pdu', function() {
+					assert.deepEqual(sent, ['unbind_resp']);
+				});
+				serverSession.on('unbind', function() {
+					assert.deepEqual(sent, ['unbind_resp']);
+					assert.strictEqual(serverSession.socket.writable, false, 'the connection is not being closed');
+					session.on('close', done);
+				});
+				session.unbind();
+			});
+		});
+
+		it('should work on a client session too', function(done) {
+			var session = connect({ auto_unbind_response: true }, function(serverSession) {
+				var answered = false;
+				serverSession.unbind(function(pdu) {
+					assert.equal(pdu.command, 'unbind_resp');
+					answered = true;
+				});
+				session.on('close', function() {
+					assert.ok(answered, 'the client did not answer the unbind');
+					done();
+				});
+			});
+		});
+
+		it('should be switchable at runtime', function(done) {
+			var session = connect({}, function(serverSession) {
+				serverSession.autoUnbindResponse = false;
+				session.unbind(function() {
+					done(new Error('unbind should not have been answered'));
+				});
+				setTimeout(function() {
+					session.destroy(done);
+				}, 100);
+			});
+		});
+	});
+
+	describe('by default', function() {
+		beforeEach(function(done) {
+			listen({}, done);
+		});
+
+		it('should not answer an incoming unbind', function(done) {
+			var session = connect({}, function(serverSession) {
+				assert.strictEqual(serverSession.autoUnbindResponse, false);
+				session.unbind(function() {
+					done(new Error('unbind should not have been answered'));
+				});
+				setTimeout(function() {
+					session.destroy(done);
+				}, 100);
+			});
+		});
+	});
+});
+
+describe('Exceptions thrown by listeners', function() {
+	var net = require('net');
+	var server, port, serverSessions, autoresponder = {};
+
+	function listen(options, done) {
+		serverSessions = [];
+		server = smpp.createServer(options, function(session) {
+			session.on('error', function(e) {
+				done(new Error('the session emitted an error: ' + e.message));
+			});
+			serverSessions.push(session);
+		});
+		server.listen(0, done);
+		port = server.address().port;
+	}
+
+	beforeEach(function(done) {
+		autoresponder.server = smpp.createServer({}, function(session) {
+			session.on('error', function() {});
+			session.on('pdu', function(pdu) {
+				session.send(pdu.response());
+			});
+		});
+		autoresponder.server.listen(0, done);
+		autoresponder.port = autoresponder.server.address().port;
+	});
+
+	afterEach(function(done) {
+		autoresponder.server.sessions.forEach(function(session) {
+			session.destroy();
+		});
+		autoresponder.server.close(done);
+	});
+
+	afterEach(function(done) {
+		if (!server) return done();
+		server.sessions.forEach(function(session) {
+			session.destroy();
+		});
+		server.close(function() {
+			server = null;
+			done();
+		});
+	});
+
+	function submitSm(sequenceNumber) {
+		return new smpp.PDU('submit_sm', { sequence_number: sequenceNumber, destination_addr: '1' });
+	}
+
+	// Feeds the server session three submit_sm with raw writes: two in one chunk, one in a later
+	// chunk. Calls back with the server session as soon as it exists, and the raw socket.
+	function feedThreePDUs(callback) {
+		var socket = net.connect(port);
+		socket.on('error', function() {});
+		server.once('session', function(session) {
+			callback(session, socket);
+			socket.write(Buffer.concat([submitSm(1).toBuffer(), submitSm(2).toBuffer()]), function() {
+				setTimeout(function() {
+					socket.write(submitSm(3).toBuffer());
+				}, 20);
+			});
+		});
+	}
+
+	function throwOnFirst(error) {
+		var first = true;
+		return function() {
+			if (first) {
+				first = false;
+				throw error;
+			}
+		};
+	}
+
+	it('should keep reading after a pdu listener throws, and report the exception as listener_error', function(done) {
+		listen({}, function() {
+			var boom = new Error('boom');
+			feedThreePDUs(function(session, socket) {
+				var received = [], errors = [];
+				session.on('pdu', throwOnFirst(boom));
+				session.on('submit_sm', function(pdu) {
+					received.push(pdu.sequence_number);
+					if (received.length < 3) return;
+					assert.deepEqual(received, [1, 2, 3]);
+					assert.equal(errors.length, 1);
+					assert.strictEqual(errors[0].error, boom);
+					assert.equal(errors[0].event, 'pdu');
+					assert.equal(errors[0].pdu.sequence_number, 1);
+					socket.destroy();
+					done();
+				});
+				session.on('listener_error', function(report) {
+					errors.push(report);
+				});
+			});
+		});
+	});
+
+	it('should keep reading after a command listener throws', function(done) {
+		listen({}, function() {
+			feedThreePDUs(function(session, socket) {
+				var received = [];
+				session.on('submit_sm', throwOnFirst(new Error('boom')));
+				session.on('pdu', function(pdu) {
+					received.push(pdu.sequence_number);
+					if (received.length < 3) return;
+					assert.deepEqual(received, [1, 2, 3]);
+					socket.destroy();
+					done();
+				});
+				session.on('listener_error', function() {});
+			});
+		});
+	});
+
+	it('should neither stop reading nor emit error when a debug or metrics listener throws', function(done) {
+		var debugCalls = 0;
+		listen({
+			debugListener: function(type) {
+				if (type === 'pdu.command.in' && ++debugCalls === 1) {
+					throw new Error('debug boom');
+				}
+			}
+		}, function() {
+			feedThreePDUs(function(session, socket) {
+				var received = [], errors = [];
+				var metricsBoom = throwOnFirst(new Error('metrics boom'));
+				session.on('metrics', function(event) {
+					if (event === 'pdu.command.in') metricsBoom();
+				});
+				session.on('listener_error', function(report) {
+					errors.push(report.event + ':' + report.error.message);
+				});
+				session.on('pdu', function(pdu) {
+					received.push(pdu.sequence_number);
+					if (received.length < 3) return;
+					assert.deepEqual(received, [1, 2, 3]);
+					assert.deepEqual(errors, ['debug:debug boom', 'metrics:metrics boom']);
+					socket.destroy();
+					done();
+				});
+			});
+		});
+	});
+
+	it('should keep reading after a responseCallback throws', function(done) {
+		var session = smpp.connect({ port: autoresponder.port }, function() {
+			var errors = [];
+			session.on('listener_error', function(report) {
+				errors.push(report);
+			});
+			var first = session.submit_sm({ destination_addr: '1' }, function() {
+				throw new Error('boom');
+			});
+			session.submit_sm({ destination_addr: '2' }, function(pdu) {
+				assert.equal(pdu.command, 'submit_sm_resp');
+				assert.equal(pdu.sequence_number, 2);
+				assert.equal(errors.length, 1);
+				assert.equal(errors[0].event, 'responseCallback');
+				assert.equal(errors[0].pdu.sequence_number, 1);
+				session.destroy(done);
+			});
+			assert.strictEqual(first, true);
+		});
+	});
+
+	it('should still call the sendCallback when a send listener throws', function(done) {
+		var session = smpp.connect({ port: autoresponder.port }, function() {
+			var errors = [];
+			session.on('listener_error', function(report) {
+				errors.push(report.event);
+			});
+			session.on('send', function() {
+				throw new Error('boom');
+			});
+			session.enquire_link({}, null, function(pdu) {
+				assert.equal(pdu.command, 'enquire_link');
+				assert.deepEqual(errors, ['send']);
+				session.destroy(done);
+			});
+		});
+	});
+
+	it('should still write the pdu when an outgoing listener throws', function(done) {
+		var session = smpp.connect({ port: autoresponder.port }, function() {
+			var errors = [];
+			session.on('listener_error', function(report) {
+				errors.push(report.event);
+			});
+			session.on('outgoing', function() {
+				throw new Error('boom');
+			});
+			assert.strictEqual(session.enquire_link({}, function(pdu) {
+				assert.equal(pdu.command, 'enquire_link_resp');
+				assert.deepEqual(errors, ['outgoing']);
+				session.destroy(done);
+			}), true);
+		});
+	});
+
+	it('should rethrow the exception asynchronously when nothing listens for listener_error', function(done) {
+		var boom = new Error('boom');
+		// mocha turns an uncaught exception into a failure of the running test, so take its place.
+		var mochaListeners = process.listeners('uncaughtException');
+		process.removeAllListeners('uncaughtException');
+		var restore = function() {
+			process.removeAllListeners('uncaughtException');
+			mochaListeners.forEach(function(listener) {
+				process.on('uncaughtException', listener);
+			});
+		};
+		var session = smpp.connect({ port: autoresponder.port }, function() {
+			var received = [];
+			process.once('uncaughtException', function(err) {
+				restore();
+				try {
+					assert.strictEqual(err, boom);
+					// Thrown from an empty stack, after the loop over the chunk went on.
+					assert.strictEqual(session._busy, false);
+				} catch (e) {
+					return done(e);
+				}
+				session.on('pdu', function(pdu) {
+					received.push(pdu.sequence_number);
+					if (received.length === 2) session.destroy(done);
+				});
+				session.enquire_link();
+				session.enquire_link();
+			});
+			session.once('pdu', function() {
+				throw boom;
+			});
+			session.enquire_link();
+		});
+	});
+});

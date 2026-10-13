@@ -5,7 +5,7 @@ import { parse } from 'url';
 import * as defs from './defs';
 import { PDU } from './pdu';
 import { EventEmitter } from 'events';
-import { SessionEventMap, AnyPDU, EnquireLinkPDU } from './types';
+import { SessionEventMap, AnyPDU, EnquireLinkPDU, ListenerError } from './types';
 
 const proxy = require('findhit-proxywrap').proxy;
 
@@ -59,6 +59,11 @@ export interface ConnectOptions {
   close_on_enquire_link_timeout?: boolean;
   /** Answer incoming enquire_link with enquire_link_resp automatically (default: false) */
   auto_enquire_link_response?: boolean;
+  /**
+   * Answer incoming unbind with unbind_resp automatically and close the connection afterwards
+   * (default: false)
+   */
+  auto_unbind_response?: boolean;
   /** Alternative: connection URL (smpp://host:port or ssmpp://host:port for TLS) */
   url?: string;
   /** Additional options passed to net.connect or tls.connect */
@@ -99,6 +104,8 @@ export interface ServerOptions {
   close_on_enquire_link_timeout?: boolean;
   /** Answer incoming enquire_link with enquire_link_resp automatically (default: false) */
   auto_enquire_link_response?: boolean;
+  /** See ConnectOptions.auto_unbind_response */
+  auto_unbind_response?: boolean;
   /** Auto-prepend buffer for testing (internal use) */
   autoPrependBuffer?: Buffer;
   /** Additional options passed to net.Server or tls.Server */
@@ -156,6 +163,16 @@ interface PendingRequest {
 const MAX_TIMEOUT = 0x7fffffff;
 
 /**
+ * Throws the error from an empty stack: it becomes an uncaught exception without unwinding the
+ * code that is running now.
+ */
+function rethrowAsync(error: unknown): void {
+  process.nextTick(() => {
+    throw error;
+  });
+}
+
+/**
  * Validates the response_timeout option, returning 0 when it is disabled.
  */
 function normalizeResponseTimeout(value: unknown): number {
@@ -186,13 +203,19 @@ export class Session extends EventEmitter {
   private sequence: number = 0;
   private paused: boolean = false;
   private closed: boolean = false;
+  /** Address of the peer. Set when the connection is established and kept after it closes. */
   public remoteAddress: string | null = null;
   public remotePort: number | null = null;
+  /** Address of this end of the connection. Set and kept like remoteAddress/remotePort. */
+  public localAddress: string | null = null;
+  public localPort: number | null = null;
   public proxyProtocolProxy: any = null;
   /** Whether this session runs over TLS */
   public readonly tls: boolean;
   /** Whether incoming enquire_link PDUs are answered automatically */
   public autoEnquireLinkResponse: boolean;
+  /** Whether incoming unbind PDUs are answered automatically, closing the connection afterwards */
+  public autoUnbindResponse: boolean;
   private _busy: boolean = false;
   private _callbacks: Record<number, PendingRequest> = {};
   private _responseTimeout: number;
@@ -320,6 +343,7 @@ export class Session extends EventEmitter {
     this.tls = options.tls === true;
     this._responseTimeout = normalizeResponseTimeout(options.response_timeout);
     this.autoEnquireLinkResponse = options.auto_enquire_link_response === true;
+    this.autoUnbindResponse = options.auto_unbind_response === true;
     if (options.auto_enquire_link_period > 0) {
       this._enquireLink = {
         period: options.auto_enquire_link_period,
@@ -333,8 +357,7 @@ export class Session extends EventEmitter {
       // server mode / socket is already connected.
       this._mode = 'server';
       this.socket = options.socket;
-      this.remoteAddress = this.rootSocket().remoteAddress || this.remoteAddress;
-      this.remotePort = this.rootSocket().remotePort;
+      this._rememberAddresses();
       this.proxyProtocolProxy = this.rootSocket().proxyAddress
         ? { address: this.rootSocket().proxyAddress, port: this.rootSocket().proxyPort }
         : false;
@@ -345,6 +368,19 @@ export class Session extends EventEmitter {
       this._mode = 'client';
       this._useClientSocket(this._createClientSocket());
     }
+  }
+
+  /**
+   * Copies the addresses of the connection onto the session, where they stay available after the
+   * socket has closed and forgotten them. Read from rootSocket(): on a TLS or proxy-protocol
+   * session that is the socket actually connected to the peer.
+   */
+  private _rememberAddresses(): void {
+    const socket = this.rootSocket();
+    this.remoteAddress = socket.remoteAddress || this.remoteAddress;
+    this.remotePort = socket.remotePort || this.remotePort;
+    this.localAddress = socket.localAddress || this.localAddress;
+    this.localPort = socket.localPort || this.localPort;
   }
 
   /**
@@ -385,8 +421,7 @@ export class Session extends EventEmitter {
     socket.on('connect', () => {
       if (socket !== this.socket) return;
       clearTimeout(this._connectTimeout);
-      this.remoteAddress = this.rootSocket().remoteAddress || this.remoteAddress;
-      this.remotePort = this.rootSocket().remotePort || this.remoteAddress;
+      this._rememberAddresses();
       this.debug('server.connected', 'connected to server', { secure: options.tls });
       this.emitMetric('server.connected', 1);
       this.emit('connect'); // @todo should emit the session, but it would break BC
@@ -604,7 +639,43 @@ export class Session extends EventEmitter {
   private _resolvePending(response: PDU): void {
     const entry = this._callbacks[response.sequence_number];
     if (entry && this._settlePending(entry)) {
-      entry.responseCallback(response);
+      this._guard(response, 'responseCallback', () => entry.responseCallback(response));
+    }
+  }
+
+  // ========== Listener exceptions ==========
+  //
+  // What a listener or callback throws must not break the session: a throw out of the read
+  // loop used to leave _busy set, after which the session silently stopped reading until the
+  // enquire_link timeout, and a throw in a 'send' listener skipped the sendCallback. So every
+  // listener and callback the session calls while handling a pdu is called through _guard(),
+  // which reports the exception instead of letting it unwind the session's own code.
+
+  /**
+   * Calls fn, a user listener or callback, and reports what it throws instead of propagating it.
+   */
+  private _guard(pdu: PDU, event: string, fn: () => void): void {
+    try {
+      fn();
+    } catch (error) {
+      this._reportListenerError({ error, event, pdu: pdu as unknown as AnyPDU });
+    }
+  }
+
+  /**
+   * Hands the exception to the 'listener_error' listeners. Without any, it is rethrown
+   * asynchronously, so that it still surfaces as an uncaught exception like before, only
+   * from outside the session's code.
+   */
+  private _reportListenerError(report: ListenerError): void {
+    if (this.listenerCount('listener_error') === 0) {
+      rethrowAsync(report.error);
+      return;
+    }
+    try {
+      this.emit('listener_error', report);
+    } catch (error) {
+      rethrowAsync(error);
     }
   }
 
@@ -676,37 +747,53 @@ export class Session extends EventEmitter {
       return;
     }
     this._busy = true;
-    let pdu;
-    while (!this.paused) {
-      try {
-        if (!this._command_length) {
-          this._command_length = PDU.commandLength(this.socket);
+    try {
+      while (!this.paused) {
+        let pdu: PDU | false;
+        // Only the parsing is in the try: an exception of a listener is not a stream error.
+        try {
           if (!this._command_length) {
-            break;
+            this._command_length = PDU.commandLength(this.socket);
+            if (!this._command_length) {
+              break;
+            }
           }
+          pdu = PDU.fromStream(this.socket, this._command_length);
+        } catch (e) {
+          this.debug('pdu.command.error', e.message, e);
+          this.emitMetric('pdu.command.error', 1, { error: e });
+          this.emit('error', e);
+          return;
         }
-        if (!(pdu = PDU.fromStream(this.socket, this._command_length))) {
+        if (!pdu) {
           break;
         }
-        this.debug('pdu.command.in', pdu.command, pdu);
-        this.emitMetric('pdu.command.in', 1, pdu);
-      } catch (e) {
-        this.debug('pdu.command.error', e.message, e);
-        this.emitMetric('pdu.command.error', 1, { error: e });
-        this.emit('error', e);
-        return;
+        this._command_length = null;
+        this._handlePDU(pdu);
       }
-      this._command_length = null;
-      if (pdu.command === 'enquire_link' && this.autoEnquireLinkResponse) {
-        this.send(pdu.response());
-      }
-      this.emit('pdu', pdu);
-      this.emit(pdu.command, pdu);
-      if (pdu.isResponse()) {
-        this._resolvePending(pdu);
-      }
+    } finally {
+      // Whatever ended the loop, the next 'readable' must be able to read.
+      this._busy = false;
     }
-    this._busy = false;
+  }
+
+  private _handlePDU(pdu: PDU): void {
+    this._guard(pdu, 'debug', () => this.debug('pdu.command.in', pdu.command, pdu));
+    this._guard(pdu, 'metrics', () => this.emitMetric('pdu.command.in', 1, pdu));
+    // Answered before the events, so that a listener sees a request that is already taken care of.
+    if (pdu.command === 'enquire_link' && this.autoEnquireLinkResponse) {
+      this.send(pdu.response());
+    } else if (pdu.command === 'unbind' && this.autoUnbindResponse) {
+      this.send(pdu.response());
+      // end() lets the unbind_resp go out first. Closing is left to the peer by the spec, but a
+      // peer that never does would leave an unbound connection open for good.
+      this.close();
+    }
+    this._guard(pdu, 'pdu', () => this.emit('pdu', pdu));
+    this._guard(pdu, pdu.command, () => this.emit(pdu.command, pdu));
+    if (pdu.isResponse()) {
+      this._resolvePending(pdu);
+    }
   }
 
   send(
@@ -755,39 +842,39 @@ export class Session extends EventEmitter {
     } else if (responseCallback && !sendCallback) {
       sendCallback = responseCallback;
     }
-    this.debug('pdu.command.out', pdu.command, pdu);
-    this.emitMetric('pdu.command.out', 1, pdu);
     const buffer = pdu.toBuffer();
-    this.socket.write(
-      buffer,
-      function (err) {
-        if (err) {
-          this.debug('socket.data.error', null, {
-            error: 'Cannot write command ' + pdu.command + ' to socket',
-            errorType: 'socket_write_error',
-          });
-          this.emitMetric('socket.data.error', 1, {
-            error: err,
-            errorType: 'socket_write_error',
-            pdu: pdu,
-          });
-          if (pending && !this._settlePending(pending)) {
-            return; // already reported as timed out or aborted
-          }
-          if (failureCallback) {
-            pdu.command_status = defs.errors.ESME_RSUBMITFAIL;
-            failureCallback(pdu, err);
-          }
-        } else {
-          this.debug('socket.data.out', null, { bytes: buffer.length, error: err });
-          this.emitMetric('socket.data.out', buffer.length, { bytes: buffer.length });
-          this.emit('send', pdu);
-          if (sendCallback) {
-            sendCallback(pdu);
-          }
+    this._guard(pdu, 'debug', () => this.debug('pdu.command.out', pdu.command, pdu));
+    this._guard(pdu, 'metrics', () => this.emitMetric('pdu.command.out', 1, pdu));
+    // Synchronous, unlike 'send': the pdu is complete and nothing has been read from the socket
+    // yet, so for a request this always comes before the 'pdu' event of its response.
+    this._guard(pdu, 'outgoing', () => this.emit('outgoing', pdu));
+    this.socket.write(buffer, (err) => {
+      if (err) {
+        this.debug('socket.data.error', null, {
+          error: 'Cannot write command ' + pdu.command + ' to socket',
+          errorType: 'socket_write_error',
+        });
+        this.emitMetric('socket.data.error', 1, {
+          error: err,
+          errorType: 'socket_write_error',
+          pdu: pdu,
+        });
+        if (pending && !this._settlePending(pending)) {
+          return; // already reported as timed out or aborted
         }
-      }.bind(this)
-    );
+        if (failureCallback) {
+          pdu.command_status = defs.errors.ESME_RSUBMITFAIL;
+          this._guard(pdu, 'failureCallback', () => failureCallback(pdu, err));
+        }
+      } else {
+        this.debug('socket.data.out', null, { bytes: buffer.length, error: err });
+        this.emitMetric('socket.data.out', buffer.length, { bytes: buffer.length });
+        this._guard(pdu, 'send', () => this.emit('send', pdu));
+        if (sendCallback) {
+          this._guard(pdu, 'sendCallback', () => sendCallback(pdu));
+        }
+      }
+    });
     return true;
   }
 
@@ -1023,6 +1110,7 @@ function ServerConstructor(this: any, options: ServerOptions | SessionListener, 
       enquire_link_timeout: self.options.enquire_link_timeout,
       close_on_enquire_link_timeout: self.options.close_on_enquire_link_timeout,
       auto_enquire_link_response: self.options.auto_enquire_link_response,
+      auto_unbind_response: self.options.auto_unbind_response,
     });
     session.server = self;
     if (socket.savedEmit) {
