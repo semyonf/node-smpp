@@ -1,5 +1,59 @@
 # @semyonf/smpp
 
+## 1.8.0
+
+### Minor Changes
+
+- bf9cefd: Add an `auto_unbind_response` option to `connect()` and `createServer()` (default `false`): the
+  session answers an incoming `unbind` with an `unbind_resp` of status `ESME_ROK`, stops its
+  `enquire_link` schedule and closes the connection (destroying the socket once the `unbind_resp` has
+  been flushed, so `'close'` follows even if the peer never closes its side), before emitting the
+  `'pdu'` and `'unbind'` events. Can be changed at runtime through `session.autoUnbindResponse`. It is
+  off by default so that handlers which already answer `unbind` keep working as they are.
+- bf9cefd: Fix a session silently going deaf after one of its listeners threw, and add a `'listener_error'`
+  event.
+
+  An exception thrown by a `'pdu'` or command listener, or by a `responseCallback`, unwound the read
+  loop with its busy flag still set, after which every further `'readable'` event was ignored and the
+  session stopped reading the socket for good (an `enquire_link_timeout` would destroy it, nothing
+  resumed it). An exception in a `'debug'`/`'metrics'` listener or `debugListener` did the same, and
+  during `pdu.command.in` was reported as an `'error'` of the session as if the stream were corrupt. A
+  throwing `'send'` listener skipped the `sendCallback`, a throwing `failureCallback` during `'close'`
+  skipped the other pending requests and the `'close'` event itself, and a throwing
+  `'response_timeout'` listener skipped the request's `failureCallback`.
+
+  Every listener and callback the session calls is now isolated: the exception is emitted as a
+  `'listener_error'` event with `{ error, event, pdu }` (type `ListenerErrorReport`), and rethrown on
+  the next tick when nothing listens for it, so it still surfaces as an uncaught exception, but no
+  longer from inside `send()`/`resume()`, and only after the rest of the chunk has been handled. The
+  `'error'` event without a listener is rethrown the same way instead of throwing synchronously out of
+  the socket handler, where it left the stream stuck.
+
+  A pdu that cannot be parsed (bad length, truncated body) now destroys the connection after the
+  `'error'` event, as the README always said. Until now the session kept the socket open but never
+  read it again.
+
+- bf9cefd: Add an `'outgoing'` event, emitted synchronously from `session.send()` for every pdu handed to the
+  socket: requests and responses, including the automatic `enquire_link`, `enquire_link_resp` and
+  `unbind_resp`.
+
+  The `'send'` event is emitted from the write callback, and Node does not guarantee that it runs
+  before the response is read, so the response to a request could be emitted as `'pdu'` before the
+  request's own `'send'`. `'outgoing'` is emitted once the `sequence_number` is assigned, right after
+  `socket.write()` was called, so for a request it always comes before the `'pdu'` event of its
+  response. It is not emitted when `send()` returns `false` or throws.
+
+  Also, a pdu that cannot be encoded no longer leaves a pending request behind: `send()` still throws,
+  but nothing waits for a response that was never asked for.
+
+- bf9cefd: Add `session.localAddress` and `session.localPort`, set together with `remoteAddress`/`remotePort`
+  (on connect for a client session, on creation for a server session, always from the socket that
+  carries the TCP connection) and, like them, kept after the connection has closed, when the socket
+  itself has forgotten its local address. On a proxy-protocol session `remoteAddress`/`remotePort`
+  still come from the PROXY header, while the local address is that of the TCP connection from the
+  proxy. Also fixes the client `'connect'` handler, which fell back to `remoteAddress` instead of the
+  previous `remotePort` when the socket reported no peer port.
+
 ## 1.7.1
 
 ### Patch Changes
